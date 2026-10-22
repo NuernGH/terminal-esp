@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Permissions for the main and pop-out session windows",
+  "windows": ["main", "pop-*"],
+  "permissions": ["core:default", "core:window:allow-set-title"]
+}

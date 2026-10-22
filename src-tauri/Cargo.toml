@@ -1,0 +1,14 @@
+[package]
+name = "esp-terminal"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+base64 = "0.23.1"
+esp_core = { version = "0.1.0", path = "../crates/core" }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+tauri = "2.12.5"
+
+[build-dependencies]
+tauri-build = "2.7.4"
