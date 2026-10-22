@@ -2,7 +2,7 @@ import '@xterm/xterm/css/xterm.css';
 import './style.css';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
-import { call, onSession, b64ToBytes, inTauri } from './api.js';
+import { call, onSession, onFlash, b64ToBytes, inTauri } from './api.js';
 
 const params = new URLSearchParams(location.search);
 const popId = params.get('session');
@@ -278,6 +278,7 @@ function mountShell() {
       <button class="btn ghost sm" id="t-rename">Rename</button>
       <button class="btn ghost sm only-multi" id="t-win"${multi}>New window</button>
       <button class="btn ghost sm" id="t-clear">Clear</button>
+      <button class="btn sm" id="t-flash">Flash .bin…</button>
     </div>
     <div class="main">
       <aside class="rail" id="rail"></aside>
@@ -326,6 +327,7 @@ function renderToolbar() {
   $$('#lay button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.l === S.layout)));
   for (const id of ['t-addr', 't-conn', 't-settings', 't-rename', 't-clear']) $('#' + id).hidden = !s;
   $('#t-win').hidden = !s || !!popId;
+  $('#t-flash').hidden = !!popId;
   if (!s) return;
   $('#t-addr').textContent = `${typeOf(s.config)} · ${addrOf(s.config)}`;
   const c = $('#t-conn');
@@ -573,6 +575,138 @@ async function openDialog(editId) {
   };
 }
 
+// ------------------------------------------------------------------ firmware upload dialog
+async function openFlashDialog() {
+  const s = cur();
+  const last = store.get('flash', {});
+  const sc = s?.config;
+  const ports = await call('list_serial_ports').catch(() => []);
+  const tool = await call('esptool_path').catch(() => null);
+  let method = last.method || (sc && sc.kind !== 'serial' ? 'ota' : 'serial');
+  let running = false;
+  const ov = document.createElement('div');
+  ov.className = 'ov';
+  ov.innerHTML = `<form class="dlg" role="dialog" aria-label="Flash firmware">
+    <h3>Flash firmware${s ? ` to ${esc(s.name)}` : ''}</h3>
+    <div class="frm"><label class="full">Firmware file (.bin)
+      <span class="row"><input id="f-file" value="${esc(last.file || '')}" placeholder="C:\\firmware\\app.bin" autocomplete="off"><button type="button" class="btn ghost sm" id="f-browse">Browse…</button></span></label></div>
+    <div class="seg two" id="f-method">
+      <button type="button" data-m="serial">Serial cable<small>esptool over COM port</small></button>
+      <button type="button" data-m="ota">WiFi (OTA)<small>Arduino OTA protocol</small></button>
+    </div>
+    <div class="frm" data-for="serial">
+      <label class="full">Port<input id="f-port" list="f-ports" value="${esc(sc?.kind === 'serial' ? sc.port : last.port || ports[0]?.name || '')}" autocomplete="off"><datalist id="f-ports">${ports.map((p) => `<option value="${esc(p.name)}">${esc(p.description)}</option>`).join('')}</datalist></label>
+      <label>Flash speed<select id="f-baud">${[115200, 230400, 460800, 921600].map((b) => `<option${b === (last.baud || 460800) ? ' selected' : ''}>${b}</option>`).join('')}</select></label>
+      <label>Start address<input id="f-addr" list="f-addrs" value="${esc(last.address || '0x10000')}" autocomplete="off"><datalist id="f-addrs"><option value="0x10000">app image</option><option value="0x0">merged image / ESP8266</option><option value="0x1000">ESP32 bootloader</option></datalist></label>
+      <label class="chk full"><input type="checkbox" id="f-erase"> Erase the whole flash first (also wipes saved WiFi settings)</label>
+      <p class="hint full">${tool ? 'Uses esptool: ' + esc(tool) : '<span class="err-text">esptool was not found. The installer bundles it; a local build needs esptool on PATH.</span>'}<br>Typical addresses: 0x10000 for an app .bin from Arduino or PlatformIO, 0x0 for a merged image or an ESP8266 firmware.</p>
+    </div>
+    <div class="frm" data-for="ota">
+      <label>Board address<input id="f-host" value="${esc(sc && sc.kind !== 'serial' ? sc.host : last.host || '')}" placeholder="192.168.1.60" autocomplete="off"></label>
+      <label>OTA port<input id="f-oport" list="f-oports" value="${last.oport || 3232}" inputmode="numeric"><datalist id="f-oports"><option value="3232">ESP32</option><option value="8266">ESP8266</option></datalist></label>
+      <label>OTA password (if set)<input id="f-pass" type="password" autocomplete="off"></label>
+      <label>Target<select id="f-target"><option value="fw">Firmware</option><option value="fs">Filesystem image</option></select></label>
+      <p class="hint full">The sketch must include ArduinoOTA. Allow ESP Terminal through the Windows firewall on private networks, because the board connects back to this PC to fetch the file.</p>
+    </div>
+    <div id="f-run" hidden><div class="prog"><i id="f-bar"></i></div><p class="hint" id="f-msg"></p><pre class="log" id="f-log"></pre></div>
+    <p class="err-text" id="f-err" hidden></p>
+    <div class="acts"><button type="button" class="btn ghost" id="f-close">Close</button><button class="btn" id="f-go">Flash</button></div>
+  </form>`;
+  document.body.append(ov);
+  const q = (x) => $(x, ov);
+  let off = () => {};
+  const close = () => {
+    off();
+    ov.remove();
+  };
+  const setMethod = (m) => {
+    method = m;
+    $$('#f-method button', ov).forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.m === m)));
+    $$('[data-for]', ov).forEach((f) => (f.hidden = f.dataset.for !== m));
+  };
+  setMethod(method);
+  $$('#f-method button', ov).forEach((b) => (b.onclick = () => !running && setMethod(b.dataset.m)));
+  q('#f-close').onclick = () => !running && close();
+  ov.addEventListener('keydown', (e) => e.key === 'Escape' && !running && close());
+  q('#f-file').focus();
+  q('#f-browse').onclick = async () => {
+    try {
+      const { open } = await import('@tauri-apps/plugin-dialog');
+      const f = await open({ multiple: false, filters: [{ name: 'Firmware', extensions: ['bin'] }, { name: 'All files', extensions: ['*'] }] });
+      if (f) q('#f-file').value = f;
+    } catch {
+      q('#f-msg').textContent = 'The file picker is only available in the desktop app. Paste the path instead.';
+      q('#f-run').hidden = false;
+    }
+  };
+
+  const busy = (b) => {
+    running = b;
+    $$('input, select, #f-browse, #f-method button', ov).forEach((e) => (e.disabled = b));
+    q('#f-close').disabled = false;
+    q('#f-close').textContent = b ? 'Cancel upload' : 'Close';
+    q('#f-close').onclick = b ? () => call('flash_cancel').catch(() => {}) : close;
+    q('#f-go').disabled = b;
+  };
+  const log = q('#f-log');
+  off = await onFlash((ev) => {
+    if (ev.type === 'log') {
+      log.textContent += ev.line + '\n';
+      log.scrollTop = log.scrollHeight;
+    } else if (ev.type === 'progress') {
+      q('#f-bar').style.width = Math.min(100, ev.pct) + '%';
+      q('#f-msg').textContent = `Uploading… ${ev.pct.toFixed(0)}%`;
+    } else if (ev.type === 'done') {
+      q('#f-bar').style.width = '100%';
+      q('#f-msg').innerHTML = '<span class="ok-text">Done. The board restarted with the new firmware.</span>';
+      busy(false);
+    } else if (ev.type === 'error') {
+      q('#f-msg').innerHTML = `<span class="err-text">${esc(ev.message)}</span>`;
+      busy(false);
+    }
+  });
+
+  q('form').onsubmit = async (e) => {
+    e.preventDefault();
+    if (running) return;
+    const err = (m) => {
+      const p = q('#f-err');
+      p.textContent = m;
+      p.hidden = false;
+    };
+    q('#f-err').hidden = true;
+    const file = q('#f-file').value.trim().replace(/^"|"$/g, '');
+    if (!file) return err('Choose the .bin file to upload.');
+    let req;
+    if (method === 'serial') {
+      const port = q('#f-port').value.trim();
+      if (!port) return err('Enter the serial port, for example COM5.');
+      const address = q('#f-addr').value.trim();
+      if (!/^(0x[0-9a-f]+|\d+)$/i.test(address)) return err('The start address must be a number such as 0x10000.');
+      req = { method: 'serial', file, port, baud: +q('#f-baud').value, address, erase: q('#f-erase').checked, session_id: sc?.kind === 'serial' && sc.port === port ? s.id : null };
+      store.set('flash', { ...last, method, file, port, baud: req.baud, address });
+    } else {
+      const host = q('#f-host').value.trim();
+      const port = Number(q('#f-oport').value);
+      if (!host) return err('Enter the board’s IP address or host name.');
+      if (!(port > 0 && port < 65536)) return err('Enter the OTA port (3232 for ESP32, 8266 for ESP8266).');
+      req = { method: 'ota', file, host, port, password: q('#f-pass').value, filesystem: q('#f-target').value === 'fs', session_id: sc && sc.kind !== 'serial' && sc.host === host ? s.id : null };
+      store.set('flash', { ...last, method, file, host, oport: port });
+    }
+    q('#f-run').hidden = false;
+    q('#f-bar').style.width = '0';
+    q('#f-msg').textContent = 'Starting…';
+    log.textContent = '';
+    busy(true);
+    try {
+      await call('flash_start', { req });
+    } catch (e2) {
+      q('#f-msg').innerHTML = `<span class="err-text">${esc(String(e2))}</span>`;
+      busy(false);
+    }
+  };
+}
+
 // ------------------------------------------------------------------ wiring
 function wire() {
   document.addEventListener('click', (e) => {
@@ -609,6 +743,7 @@ function wire() {
       select(item.dataset.id);
     }
   });
+  $('#t-flash').onclick = () => openFlashDialog();
   $('#t-conn').onclick = () => toggle(S.active);
   $('#t-settings').onclick = () => openDialog(S.active);
   $('#t-rename').onclick = () => startRename(S.active, visibleName(S.active));

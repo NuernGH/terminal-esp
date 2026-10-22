@@ -5,7 +5,7 @@ named sessions over **serial (COM)**, **TCP/Telnet** (WiFi serial bridges) or **
 activity per board, and switch between Tabs, Rail and Grid layouts. Built with Tauri 2 (Rust
 backend) and xterm.js.
 
-## What works now (step 1 and 2)
+## What works now
 
 - Connection types: Serial (baud, data bits, parity, stop bits, flow control, optional reset pulse),
   TCP with Telnet or raw mode, UDP.
@@ -14,12 +14,16 @@ backend) and xterm.js.
 - RX/TX LEDs and byte counters on every session.
 - Scan network: mDNS (`_telnet._tcp`) plus a TCP port probe of the local /24 subnet.
 - Layouts: Tabs, Rail, Grid. Any session can pop out into its own window.
+- **Flash .bin** (toolbar button): over a serial cable with the bundled esptool (any ESP chip,
+  chosen start address, optional full erase), or over WiFi with the Arduino OTA protocol
+  (ESP32 port 3232, ESP8266 port 8266, optional password, firmware or filesystem image).
+  A serial upload releases the COM port and reconnects the session afterwards.
 - Typing in the terminal sends keystrokes (Enter uses the session's line ending); there is also a
   send box with history (Up/Down).
 
 ## Not done yet
 
-- Flashing .bin files (serial via esptool, and OTA over WiFi): step 3.
+- HTTP uploads to a web updater (`/update`), as used by Tasmota and ESPHome.
 - RFC 2217, log-to-file, macros and highlight rules: step 4.
 
 ## Build on Windows
@@ -31,6 +35,9 @@ npm install
 npm run tauri dev      # run with hot reload
 npm run tauri build    # installer in target/release/bundle/nsis/
 ```
+
+Serial flashing needs esptool. The installer bundles it; for `tauri dev` put Espressif's
+`esptool.exe` into `src-tauri/resources/esptool/` or install esptool so it is on PATH.
 
 Pushing to GitHub also builds the installer in Actions (`.github/workflows/build.yml`).
 

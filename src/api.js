@@ -18,6 +18,14 @@ export async function onSession(cb) {
   return () => listeners.delete(cb);
 }
 
+const flashListeners = new Set();
+/** Subscribe to firmware upload events (log, progress, done, error). */
+export async function onFlash(cb) {
+  if (inTauri) return listen('flash', (e) => cb(e.payload));
+  flashListeners.add(cb);
+  return () => flashListeners.delete(cb);
+}
+
 export async function call(cmd, args = {}) {
   return inTauri ? invoke(cmd, args) : mockCall(cmd, args);
 }
@@ -98,6 +106,32 @@ function mockCall(cmd, a) {
           800,
         ),
       );
+    case 'esptool_path':
+      return Promise.resolve('C:\\Program Files\\ESP Terminal\\esptool\\esptool.exe');
+    case 'flash_start': {
+      const fe = (ev) => flashListeners.forEach((cb) => cb(ev));
+      sim.flashTimer && clearInterval(sim.flashTimer);
+      if (a.req.file.includes('missing')) {
+        setTimeout(() => fe({ type: 'error', message: `File not found: ${a.req.file}` }), 200);
+        return Promise.resolve();
+      }
+      let pct = 0;
+      fe({ type: 'log', line: a.req.method === 'ota' ? `Inviting ${a.req.host}:${a.req.port}…` : 'Connecting....' });
+      sim.flashTimer = setInterval(() => {
+        pct += 12.5;
+        fe({ type: 'progress', pct });
+        if (pct >= 100) {
+          clearInterval(sim.flashTimer);
+          fe({ type: 'log', line: 'Hard resetting via RTS pin...' });
+          fe({ type: 'done' });
+        }
+      }, 150);
+      return Promise.resolve();
+    }
+    case 'flash_cancel':
+      clearInterval(sim.flashTimer);
+      flashListeners.forEach((cb) => cb({ type: 'error', message: 'Cancelled' }));
+      return Promise.resolve();
     case 'open_window':
       window.open(`?session=${a.sessionId}`, '_blank');
       return Promise.resolve();

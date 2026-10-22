@@ -2,6 +2,7 @@
 //! UDP, with RX/TX counters, a scrollback backlog and network discovery.
 //! It has no GUI dependency; the Tauri shell feeds it an event callback.
 
+pub mod flash;
 pub mod scan;
 pub mod telnet;
 

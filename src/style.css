@@ -123,3 +123,14 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 
 .xterm { height: 100%; }
 .xterm-viewport { background: transparent !important; }
+
+.dlg .seg.two { grid-template-columns: repeat(2, 1fr); }
+.dlg .seg button[aria-pressed='true'] { background: var(--accent); color: #fff; }
+.row { display: flex; gap: 6px; }
+.row input { flex: 1; }
+.prog { height: 7px; background: var(--line); border-radius: 4px; overflow: hidden; }
+.prog i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .15s; }
+.log { margin: 0; max-height: 150px; overflow: auto; background: var(--term); color: var(--termfg); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; font: 11.5px/1.45 var(--mono); white-space: pre-wrap; word-break: break-word; }
+.log:empty { display: none; }
+.ok-text { color: var(--ok); }
+.frm .hint.full { margin: 0; }
