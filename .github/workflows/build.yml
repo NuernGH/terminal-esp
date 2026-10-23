@@ -5,6 +5,9 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   windows:
     runs-on: windows-latest
@@ -67,3 +70,14 @@ jobs:
         with:
           name: esp-terminal-windows-portable
           path: portable/*.zip
+      - name: Publish a release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $v = "0.1.${{ github.run_number }}"
+          $notes = "Version $v`n`n" + (git log -1 --pretty=%B)
+          $setup = (Get-ChildItem target/release/bundle/nsis/*.exe | Select-Object -First 1).FullName
+          $zip = (Get-ChildItem portable/*.zip | Select-Object -First 1).FullName
+          gh release create "v$v" $setup $zip --title "ESP Terminal $v" --notes $notes --latest --target "${{ github.sha }}"

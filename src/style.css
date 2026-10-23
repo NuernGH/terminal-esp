@@ -234,3 +234,7 @@ body.reordering { user-select: none; cursor: grabbing; }
 #d-type button:nth-last-child(-n+3) { border-bottom: 0; }
 .dlg code { font-family: var(--mono); font-size: 11.5px; }
 #d-type button:nth-last-child(-n+3) { border-bottom: 0; }
+.status .upd { margin-left: auto; color: var(--accent); font-weight: 600; text-decoration: none; }
+.status .upd + .ver { margin-left: 12px; }
+.status .ver[data-check] { cursor: pointer; }
+.status .ver[data-check]:hover { color: var(--accent); }

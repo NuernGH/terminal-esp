@@ -116,6 +116,9 @@ function mockCall(cmd, a) {
     case 'session_set_secret':
       (window.__secrets ??= []).push([a.id, a.secret]);
       return Promise.resolve();
+    case 'open_release_page':
+      (window.__opened ??= []).push(a.url);
+      return Promise.resolve();
     case 'session_resize':
       (window.__resized ??= []).push([a.id, a.cols, a.rows]);
       return Promise.resolve();

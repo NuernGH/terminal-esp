@@ -87,6 +87,19 @@ fn session_set_secret(eng: State<Core>, id: String, secret: Option<String>) -> R
     eng.0.set_secret(&id, secret)
 }
 
+/// Opens the project's release page in the default browser. Only this project's GitHub URLs are allowed.
+#[tauri::command]
+fn open_release_page(url: String) -> Result<(), String> {
+    if !url.starts_with("https://github.com/NuernGH/terminal-esp/") {
+        return Err("Not an allowed address".into());
+    }
+    #[cfg(windows)]
+    std::process::Command::new("cmd").args(["/C", "start", "", &url]).spawn().map_err(|e| e.to_string())?;
+    #[cfg(not(windows))]
+    std::process::Command::new("xdg-open").arg(&url).spawn().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 #[tauri::command]
 fn session_resize(eng: State<Core>, id: String, cols: u16, rows: u16) -> Result<(), String> {
     eng.0.resize(&id, cols, rows)
@@ -311,6 +324,7 @@ fn main() {
             session_send,
             session_send_bytes,
             session_resize,
+            open_release_page,
             session_set_secret,
             read_file_b64,
             append_file,

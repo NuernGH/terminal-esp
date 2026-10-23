@@ -602,8 +602,47 @@ function renderToolbar() {
   c.className = 'btn sm' + (s.state === 'on' ? ' ghost' : '');
 }
 
-let VERSION = '';
-if (inTauri) import('@tauri-apps/api/app').then((m) => m.getVersion()).then((v) => ((VERSION = v), renderStatus())).catch(() => {});
+let VERSION = inTauri ? '' : '0.1.0';
+let UPDATE = null; // { version, url } when a newer release exists
+const RELEASES = 'https://api.github.com/repos/NuernGH/terminal-esp/releases/latest';
+
+const newer = (a, b) => {
+  const x = a.split('.').map(Number);
+  const y = b.split('.').map(Number);
+  for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0);
+  return false;
+};
+
+/** Looks at the newest GitHub release. Quiet on startup, reports the result when asked for. */
+async function checkUpdate(manual) {
+  if (!VERSION) return;
+  try {
+    const r = await fetch(RELEASES, { headers: { Accept: 'application/vnd.github+json' } });
+    if (!r.ok) throw new Error(`GitHub answered ${r.status}`);
+    const rel = await r.json();
+    const v = String(rel.tag_name || '').replace(/^v/, '');
+    if (v && newer(v, VERSION)) {
+      UPDATE = { version: v, url: rel.html_url };
+      note(`Version ${v} is available.`);
+    } else {
+      UPDATE = null;
+      if (manual) note(`You have the latest version (${VERSION}).`);
+    }
+  } catch (e) {
+    if (manual) note(`Could not check for updates: ${e.message || e}`, true);
+  }
+  renderStatus();
+}
+
+if (inTauri)
+  import('@tauri-apps/api/app')
+    .then((m) => m.getVersion())
+    .then((v) => {
+      VERSION = v;
+      renderStatus();
+      if (!popId) setTimeout(() => checkUpdate(false), 3000);
+    })
+    .catch(() => {});
 
 function renderStatus() {
   const s = cur();
@@ -611,7 +650,11 @@ function renderStatus() {
   $('#status').innerHTML = s
     ? `<span>${s.state === 'on' ? '● Connected' : s.state === 'connecting' ? '◌ Connecting…' : '○ Disconnected'} · ${esc(s.name)}</span>${leds(s, true)}<span>${esc(s.lineEnd)}</span>${n ? `<span class="msg ${n.isErr ? 'err' : ''}">${esc(n.msg)}</span>` : ''}`
     : `<span>Ready</span>${n ? `<span class="msg ${n.isErr ? 'err' : ''}">${esc(n.msg)}</span>` : ''}`;
-  if (VERSION) $('#status').insertAdjacentHTML('beforeend', `<span class="ver" title="App version">v${esc(VERSION)}</span>`);
+  if (VERSION)
+    $('#status').insertAdjacentHTML(
+      'beforeend',
+      `${UPDATE ? `<a class="upd" href="#" data-update title="Open the download page">⬆ Version ${esc(UPDATE.version)} available</a>` : ''}<span class="ver" data-check title="App version. Click to check for updates.">v${esc(VERSION)}</span>`,
+    );
 }
 
 function updateTitle() {
@@ -1519,6 +1562,12 @@ function wire() {
   wireGridResize();
   F.init({ S, get, cur, call, note, esc, $, $$, store, EOL, sendText, sendBytes, renderToolbar, fitAll });
   F.renderMacros();
+  $('#status').addEventListener('click', (e) => {
+    if (e.target.closest('[data-update]') && UPDATE) {
+      e.preventDefault();
+      call('open_release_page', { url: UPDATE.url }).catch((err) => note(String(err), true));
+    } else if (e.target.closest('[data-check]')) checkUpdate(true);
+  });
   $('#macros').addEventListener('click', (e) => {
     if (e.target.closest('#m-edit')) return F.openMacroDialog();
     const m = e.target.closest('[data-m]');

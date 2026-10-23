@@ -59,3 +59,7 @@ Pushing to GitHub also builds the installer in Actions (`.github/workflows/build
 ## Portable version
 
 Every build also makes `ESP-Terminal-<version>-portable.zip` (Actions artifact `esp-terminal-windows-portable`): unzip anywhere and run `ESP Terminal.exe`, no installation. esptool and avrdude are included.
+
+## Updates
+
+Every push to `main` publishes a GitHub Release (`v0.1.<run number>`) with the installer and the portable zip. The app checks the latest release a few seconds after starting and shows "⬆ Version x available" in the status bar; click the version number at the right of the status bar to check by hand. The link opens the release page, the update is not installed automatically.
