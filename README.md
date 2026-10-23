@@ -13,7 +13,9 @@ backend) and xterm.js.
 - A new session is added **disconnected**. The status dot (and the Connect button) connects and disconnects.
 - RX/TX LEDs and byte counters on every session.
 - Scan network: mDNS (`_telnet._tcp`) plus a TCP port probe of the local /24 subnet.
-- Layouts: Tabs, Rail, Grid. Any session can pop out into its own window.
+- Layouts: Tabs, Rail, Grid. Drag grid blocks (by their header), tabs or rail cards to reorder them; the Grid layout also has a column count.
+- Baud rate dropdown on every serial session: changes apply immediately, without reconnecting.
+- Auto-reconnect (per session, on by default): if the connection drops, or the board is not there yet, the app keeps retrying every 2 seconds until you click the status dot. Any session can pop out into its own window.
 - **Flash .bin** (toolbar button): over a serial cable with the bundled esptool (any ESP chip,
   chosen start address, optional full erase), or over WiFi with the Arduino OTA protocol
   (ESP32 port 3232, ESP8266 port 8266, optional password, firmware or filesystem image).

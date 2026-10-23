@@ -99,6 +99,8 @@ pub enum Event {
     State { id: String, state: ConnState, message: Option<String> },
     Stats { rows: Vec<StatRow> },
     Meta { id: String, name: String },
+    /// Settings that changed while the session exists (baud rate, auto-reconnect).
+    Settings { id: String, config: Config, auto_reconnect: bool },
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -106,6 +108,7 @@ pub struct SessionInfo {
     pub id: String,
     pub name: String,
     pub config: Config,
+    pub auto_reconnect: bool,
     pub state: ConnState,
     pub rx: u64,
     pub tx: u64,
@@ -141,10 +144,18 @@ struct Conn {
     tx: Sender<Vec<u8>>,
     stop: Arc<AtomicBool>,
     telnet: bool,
+    /// Handle to the open serial port, used to change settings while connected.
+    serial: Option<Mutex<Box<dyn serialport::SerialPort>>>,
+}
+
+struct Meta {
+    name: String,
+    config: Config,
+    auto_reconnect: bool,
 }
 
 struct Session {
-    meta: Mutex<(String, Config)>,
+    meta: Mutex<Meta>,
     state: Mutex<ConnState>,
     generation: AtomicU64,
     conn: Mutex<Option<Conn>>,
@@ -156,6 +167,7 @@ struct Session {
 struct Inner {
     sessions: Mutex<HashMap<String, Arc<Session>>>,
     emit: Box<dyn Fn(Event) + Send + Sync>,
+    retry_delay: Mutex<Duration>,
 }
 
 #[derive(Clone)]
@@ -169,6 +181,7 @@ struct Opened {
     telnet: bool,
     /// A zero-length read means the peer closed (true for TCP, not for UDP).
     eof_on_zero: bool,
+    control: Option<Box<dyn serialport::SerialPort>>,
 }
 
 struct UdpIo(UdpSocket);
@@ -221,7 +234,8 @@ fn open(cfg: &Config) -> Result<Opened, String> {
                 let _ = p.write_request_to_send(false);
             }
             let writer = p.try_clone().map_err(|e| e.to_string())?;
-            Ok(Opened { reader: Box::new(p), writer: Box::new(writer), telnet: false, eof_on_zero: false })
+            let control = p.try_clone().map_err(|e| e.to_string())?;
+            Ok(Opened { reader: Box::new(p), writer: Box::new(writer), telnet: false, eof_on_zero: false, control: Some(control) })
         }
         Config::Tcp { host, port, protocol } => {
             let addrs = (host.as_str(), *port)
@@ -239,6 +253,7 @@ fn open(cfg: &Config) -> Result<Opened, String> {
                             writer: Box::new(w),
                             telnet: protocol == "telnet",
                             eof_on_zero: true,
+                            control: None,
                         });
                     }
                     Err(e) => last = format!("Cannot connect to {a}: {e}"),
@@ -253,14 +268,20 @@ fn open(cfg: &Config) -> Result<Opened, String> {
                 .map_err(|e| format!("Cannot reach {host}:{port}: {e}"))?;
             sock.set_read_timeout(Some(POLL)).map_err(|e| e.to_string())?;
             let w = sock.try_clone().map_err(|e| e.to_string())?;
-            Ok(Opened { reader: Box::new(UdpIo(sock)), writer: Box::new(UdpIo(w)), telnet: false, eof_on_zero: false })
+            Ok(Opened { reader: Box::new(UdpIo(sock)), writer: Box::new(UdpIo(w)), telnet: false, eof_on_zero: false, control: None })
         }
     }
 }
 
 impl Manager {
     pub fn new(emit: impl Fn(Event) + Send + Sync + 'static) -> Self {
-        let m = Manager { inner: Arc::new(Inner { sessions: Mutex::new(HashMap::new()), emit: Box::new(emit) }) };
+        let m = Manager {
+            inner: Arc::new(Inner {
+                sessions: Mutex::new(HashMap::new()),
+                emit: Box::new(emit),
+                retry_delay: Mutex::new(Duration::from_secs(2)),
+            }),
+        };
         let weak = Arc::downgrade(&m.inner);
         thread::spawn(move || loop {
             thread::sleep(Duration::from_millis(250));
@@ -290,16 +311,16 @@ impl Manager {
     }
 
     /// Registers a session (disconnected). Re-creating an existing id only updates it.
-    pub fn create(&self, id: &str, name: &str, config: Config) {
+    pub fn create(&self, id: &str, name: &str, config: Config, auto_reconnect: bool) {
         let mut map = self.inner.sessions.lock().unwrap();
         if let Some(s) = map.get(id) {
-            *s.meta.lock().unwrap() = (name.to_string(), config);
+            *s.meta.lock().unwrap() = Meta { name: name.to_string(), config, auto_reconnect };
             return;
         }
         map.insert(
             id.to_string(),
             Arc::new(Session {
-                meta: Mutex::new((name.to_string(), config)),
+                meta: Mutex::new(Meta { name: name.to_string(), config, auto_reconnect }),
                 state: Mutex::new(ConnState::Off),
                 generation: AtomicU64::new(0),
                 conn: Mutex::new(None),
@@ -312,7 +333,7 @@ impl Manager {
 
     pub fn rename(&self, id: &str, name: &str) -> Result<(), String> {
         let s = self.get(id)?;
-        s.meta.lock().unwrap().0 = name.to_string();
+        s.meta.lock().unwrap().name = name.to_string();
         (self.inner.emit)(Event::Meta { id: id.to_string(), name: name.to_string() });
         Ok(())
     }
@@ -327,11 +348,12 @@ impl Manager {
         let mut v: Vec<_> = map
             .iter()
             .map(|(id, s)| {
-                let (name, config) = s.meta.lock().unwrap().clone();
+                let m = s.meta.lock().unwrap();
                 SessionInfo {
                     id: id.clone(),
-                    name,
-                    config,
+                    name: m.name.clone(),
+                    config: m.config.clone(),
+                    auto_reconnect: m.auto_reconnect,
                     state: *s.state.lock().unwrap(),
                     rx: s.rx.load(Ordering::Relaxed),
                     tx: s.tx.load(Ordering::Relaxed),
@@ -358,30 +380,85 @@ impl Manager {
         if let Some(old) = s.conn.lock().unwrap().take() {
             old.stop.store(true, Ordering::SeqCst);
         }
-        let cfg = s.meta.lock().unwrap().1.clone();
         self.set_state(id, &s, ConnState::Connecting, None);
+        self.spawn_connect(id, s, generation);
+        Ok(())
+    }
+
+    /// Tries to open the transport. With auto-reconnect on, keeps trying until it
+    /// works or the user disconnects; otherwise reports the first failure.
+    fn spawn_connect(&self, id: &str, s: Arc<Session>, generation: u64) {
         let m = self.clone();
         let id = id.to_string();
-        thread::spawn(move || match open(&cfg) {
-            Err(e) => {
-                if s.generation.load(Ordering::SeqCst) == generation {
-                    m.set_state(&id, &s, ConnState::Off, Some(e));
-                }
-            }
-            Ok(opened) => {
-                if s.generation.load(Ordering::SeqCst) != generation {
+        thread::spawn(move || loop {
+            let cfg = s.meta.lock().unwrap().config.clone();
+            match open(&cfg) {
+                Ok(opened) => {
+                    if s.generation.load(Ordering::SeqCst) == generation {
+                        m.start_io(&id, &s, generation, opened);
+                    }
                     return;
                 }
-                m.start_io(&id, &s, generation, opened);
+                Err(e) => {
+                    if s.generation.load(Ordering::SeqCst) != generation {
+                        return;
+                    }
+                    if !s.meta.lock().unwrap().auto_reconnect {
+                        m.set_state(&id, &s, ConnState::Off, Some(e));
+                        return;
+                    }
+                    let delay = *m.inner.retry_delay.lock().unwrap();
+                    let until = std::time::Instant::now() + delay;
+                    while std::time::Instant::now() < until {
+                        if s.generation.load(Ordering::SeqCst) != generation {
+                            return;
+                        }
+                        thread::sleep(Duration::from_millis(20));
+                    }
+                }
             }
         });
+    }
+
+    /// Lets tests shorten the wait between reconnect attempts.
+    pub fn set_retry_delay(&self, d: Duration) {
+        *self.inner.retry_delay.lock().unwrap() = d;
+    }
+
+    /// Changes the baud rate; applies immediately to an open port.
+    pub fn set_baud(&self, id: &str, baud: u32) -> Result<(), String> {
+        let s = self.get(id)?;
+        if !matches!(s.meta.lock().unwrap().config, Config::Serial { .. }) {
+            return Err("Baud rate applies to serial sessions only.".into());
+        }
+        if let Some(Conn { serial: Some(port), .. }) = s.conn.lock().unwrap().as_ref() {
+            port.lock().unwrap().set_baud_rate(baud).map_err(|e| format!("Cannot change the baud rate: {e}"))?;
+        }
+        let mut meta = s.meta.lock().unwrap();
+        if let Config::Serial { baud: b, .. } = &mut meta.config {
+            *b = baud;
+        }
+        (self.inner.emit)(Event::Settings { id: id.to_string(), config: meta.config.clone(), auto_reconnect: meta.auto_reconnect });
+        Ok(())
+    }
+
+    pub fn set_auto_reconnect(&self, id: &str, on: bool) -> Result<(), String> {
+        let s = self.get(id)?;
+        let mut meta = s.meta.lock().unwrap();
+        meta.auto_reconnect = on;
+        (self.inner.emit)(Event::Settings { id: id.to_string(), config: meta.config.clone(), auto_reconnect: on });
         Ok(())
     }
 
     fn start_io(&self, id: &str, s: &Arc<Session>, generation: u64, opened: Opened) {
         let stop = Arc::new(AtomicBool::new(false));
         let (tx, rx) = mpsc::channel::<Vec<u8>>();
-        *s.conn.lock().unwrap() = Some(Conn { tx: tx.clone(), stop: stop.clone(), telnet: opened.telnet });
+        *s.conn.lock().unwrap() = Some(Conn {
+            tx: tx.clone(),
+            stop: stop.clone(),
+            telnet: opened.telnet,
+            serial: opened.control.map(Mutex::new),
+        });
         self.set_state(id, s, ConnState::On, None);
 
         // Writer
@@ -460,7 +537,14 @@ impl Manager {
             stop.store(true, Ordering::SeqCst);
             if s.generation.load(Ordering::SeqCst) == generation {
                 *s.conn.lock().unwrap() = None;
-                m.set_state(&id, &s, ConnState::Off, message);
+                let auto = s.meta.lock().unwrap().auto_reconnect;
+                match message {
+                    Some(msg) if auto => {
+                        m.set_state(&id, &s, ConnState::Connecting, Some(format!("{msg}. Reconnecting…")));
+                        m.spawn_connect(&id, s.clone(), generation);
+                    }
+                    other => m.set_state(&id, &s, ConnState::Off, other),
+                }
             }
         });
     }
@@ -525,7 +609,7 @@ mod tests {
         let events = Arc::new(Mutex::new(Vec::<Event>::new()));
         let sink = events.clone();
         let m = Manager::new(move |e| sink.lock().unwrap().push(e));
-        m.create("a", "Test", Config::Tcp { host: "127.0.0.1".into(), port, protocol: "telnet".into() });
+        m.create("a", "Test", Config::Tcp { host: "127.0.0.1".into(), port, protocol: "telnet".into() }, false);
         m.connect("a").unwrap();
         assert!(wait_for(|| m.list()[0].state == ConnState::On));
         assert!(wait_for(|| m.backlog("a").unwrap() == b"hello\r\n"));
@@ -545,7 +629,7 @@ mod tests {
         let sink = events.clone();
         let m = Manager::new(move |e| sink.lock().unwrap().push(e));
         // Port 1 on localhost is closed.
-        m.create("b", "Bad", Config::Tcp { host: "127.0.0.1".into(), port: 1, protocol: "raw".into() });
+        m.create("b", "Bad", Config::Tcp { host: "127.0.0.1".into(), port: 1, protocol: "raw".into() }, false);
         m.connect("b").unwrap();
         assert!(wait_for(|| events
             .lock()
@@ -560,7 +644,7 @@ mod tests {
         peer.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
         let peer_port = peer.local_addr().unwrap().port();
         let m = Manager::new(|_| {});
-        m.create("u", "Udp", Config::Udp { host: "127.0.0.1".into(), port: peer_port, local_port: 0 });
+        m.create("u", "Udp", Config::Udp { host: "127.0.0.1".into(), port: peer_port, local_port: 0 }, false);
         m.connect("u").unwrap();
         assert!(wait_for(|| m.list()[0].state == ConnState::On));
         m.send("u", b"hi").unwrap();
@@ -575,5 +659,90 @@ mod tests {
     fn config_parses_with_defaults() {
         let c: Config = serde_json::from_str(r#"{"kind":"serial","port":"COM5"}"#).unwrap();
         assert!(matches!(c, Config::Serial { baud: 115200, data_bits: 8, .. }));
+    }
+
+    #[test]
+    fn auto_reconnects_after_the_board_drops_the_connection() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let (mut c, _) = listener.accept().unwrap();
+            c.write_all(b"first\n").unwrap();
+            drop(c); // board reboots
+            let (mut c, _) = listener.accept().unwrap();
+            c.write_all(b"second\n").unwrap();
+            thread::sleep(Duration::from_millis(500));
+        });
+        let events = Arc::new(Mutex::new(Vec::<Event>::new()));
+        let sink = events.clone();
+        let m = Manager::new(move |e| sink.lock().unwrap().push(e));
+        m.set_retry_delay(Duration::from_millis(50));
+        m.create("r", "Reboot", Config::Tcp { host: "127.0.0.1".into(), port, protocol: "raw".into() }, true);
+        m.connect("r").unwrap();
+        assert!(wait_for(|| m.backlog("r").unwrap().ends_with(b"second\n")));
+        assert_eq!(m.list()[0].state, ConnState::On);
+        let ev = events.lock().unwrap();
+        assert!(ev.iter().any(|e| matches!(e, Event::State { state: ConnState::Connecting, message: Some(m), .. } if m.contains("Reconnecting"))));
+        drop(ev);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn auto_connect_keeps_trying_until_the_board_appears() {
+        let probe = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = probe.local_addr().unwrap().port();
+        drop(probe); // nothing listens yet
+        let m = Manager::new(|_| {});
+        m.set_retry_delay(Duration::from_millis(50));
+        m.create("w", "Late", Config::Tcp { host: "127.0.0.1".into(), port, protocol: "raw".into() }, true);
+        m.connect("w").unwrap();
+        thread::sleep(Duration::from_millis(300));
+        assert_eq!(m.list()[0].state, ConnState::Connecting);
+        let listener = TcpListener::bind(("127.0.0.1", port)).unwrap();
+        let _srv = thread::spawn(move || {
+            let (_c, _) = listener.accept().unwrap();
+            thread::sleep(Duration::from_secs(1));
+        });
+        assert!(wait_for(|| m.list()[0].state == ConnState::On));
+    }
+
+    #[test]
+    fn disconnect_stops_the_retry_loop() {
+        let m = Manager::new(|_| {});
+        m.set_retry_delay(Duration::from_millis(30));
+        m.create("x", "Gone", Config::Tcp { host: "127.0.0.1".into(), port: 1, protocol: "raw".into() }, true);
+        m.connect("x").unwrap();
+        thread::sleep(Duration::from_millis(150));
+        m.disconnect("x").unwrap();
+        thread::sleep(Duration::from_millis(150));
+        assert_eq!(m.list()[0].state, ConnState::Off);
+    }
+
+    #[test]
+    fn without_auto_reconnect_a_dropped_connection_stays_off() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let _srv = thread::spawn(move || {
+            let (c, _) = listener.accept().unwrap();
+            drop(c);
+        });
+        let m = Manager::new(|_| {});
+        m.create("n", "Once", Config::Tcp { host: "127.0.0.1".into(), port, protocol: "raw".into() }, false);
+        m.connect("n").unwrap();
+        thread::sleep(Duration::from_millis(400));
+        assert_eq!(m.list()[0].state, ConnState::Off);
+    }
+
+    #[test]
+    fn baud_and_auto_reconnect_settings() {
+        let m = Manager::new(|_| {});
+        m.create("t", "Tcp", Config::Tcp { host: "h".into(), port: 1, protocol: "raw".into() }, false);
+        assert!(m.set_baud("t", 9600).unwrap_err().contains("serial"));
+        m.create("s", "Ser", Config::Serial { port: "COM9".into(), baud: 115200, data_bits: 8, parity: "none".into(), stop_bits: 1, flow: "none".into(), reset_on_connect: false }, false);
+        m.set_baud("s", 921600).unwrap(); // not connected: just remembered
+        let info = m.list().into_iter().find(|i| i.id == "s").unwrap();
+        assert!(matches!(info.config, Config::Serial { baud: 921600, .. }));
+        m.set_auto_reconnect("s", true).unwrap();
+        assert!(m.list().into_iter().find(|i| i.id == "s").unwrap().auto_reconnect);
     }
 }

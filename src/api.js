@@ -42,8 +42,21 @@ function mockCall(cmd, a) {
         { name: 'COM3', description: 'wch.cn USB-SERIAL CH340' },
       ]);
     case 'session_create':
-      sim.sessions.set(a.id, { id: a.id, name: a.name, config: a.config, state: 'off', rx: 0, tx: 0 });
+      sim.sessions.set(a.id, { id: a.id, name: a.name, config: a.config, auto_reconnect: !!a.auto_reconnect, state: 'off', rx: 0, tx: 0 });
       return Promise.resolve();
+    case 'session_set_baud': {
+      const s = sim.sessions.get(a.id);
+      if (s.config.kind !== 'serial') return Promise.reject('Baud rate applies to serial sessions only.');
+      s.config = { ...s.config, baud: a.baud };
+      emit({ type: 'settings', id: a.id, config: s.config, auto_reconnect: s.auto_reconnect });
+      return Promise.resolve();
+    }
+    case 'session_set_auto_reconnect': {
+      const s = sim.sessions.get(a.id);
+      s.auto_reconnect = a.on;
+      emit({ type: 'settings', id: a.id, config: s.config, auto_reconnect: a.on });
+      return Promise.resolve();
+    }
     case 'session_rename': {
       sim.sessions.get(a.id).name = a.name;
       emit({ type: 'meta', id: a.id, name: a.name });
@@ -86,6 +99,15 @@ function mockCall(cmd, a) {
     case 'session_send': {
       const s = sim.sessions.get(a.id);
       if (s.state !== 'on') return Promise.reject('Not connected');
+      if (a.data.startsWith('!drop')) {
+        clearInterval(sim.timers.get(a.id));
+        s.state = 'off';
+        if (s.auto_reconnect) {
+          emit({ type: 'state', id: a.id, state: 'connecting', message: 'Connection lost: simulated drop. Reconnecting…' });
+          setTimeout(() => mockCall('session_connect', { id: a.id }), 600);
+        } else emit({ type: 'state', id: a.id, state: 'off', message: 'Connection lost: simulated drop' });
+        return Promise.resolve();
+      }
       s.tx += a.data.length;
       emit({ type: 'data', id: a.id, data: strToB64(a.data.replace(/\r/g, '\r\n')) });
       emit({ type: 'stats', rows: [{ id: a.id, rx: s.rx, tx: s.tx }] });

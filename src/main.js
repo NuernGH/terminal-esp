@@ -67,7 +67,7 @@ function persist() {
   if (popId) return;
   store.set(
     'sessions',
-    [...S.sessions.values()].map(({ id, name, config, lineEnd }) => ({ id, name, config, lineEnd })),
+    [...S.sessions.values()].map(({ id, name, config, lineEnd, autoReconnect }) => ({ id, name, config, lineEnd, autoReconnect })),
   );
 }
 
@@ -98,6 +98,7 @@ function addSession(info) {
     name: info.name,
     config: info.config,
     lineEnd: info.lineEnd || 'CRLF',
+    autoReconnect: info.autoReconnect ?? info.auto_reconnect ?? true,
     state: info.state || 'off',
     rx: info.rx || 0,
     tx: info.tx || 0,
@@ -248,11 +249,18 @@ function onEvent(ev) {
     s.name = ev.name;
     persist();
     renderAll();
+  } else if (ev.type === 'settings') {
+    s.config = ev.config;
+    s.autoReconnect = ev.auto_reconnect;
+    persist();
+    renderAll();
   } else if (ev.type === 'state') {
     const was = s.state;
     s.state = ev.state;
     if (ev.state === 'on') s.term.write('\x1b[32m-- connected --\x1b[0m\r\n');
-    else if (ev.state === 'off') {
+    else if (ev.state === 'connecting') {
+      if (ev.message) s.term.write(`\x1b[33m-- ${ev.message} --\x1b[0m\r\n`);
+    } else if (ev.state === 'off') {
       if (ev.message) {
         s.term.write(`\x1b[31m-- ${ev.message} --\x1b[0m\r\n`);
         if (s.id === S.active) note(ev.message, true);
@@ -272,7 +280,10 @@ function mountShell() {
         <button data-l="tabs">Tabs</button><button data-l="rail">Rail</button><button data-l="grid">Grid</button>
       </div>
       <span class="sp"></span>
+      <label class="only-grid" id="cols-wrap" hidden>Columns <select id="grid-cols"><option value="auto">Auto</option><option>1</option><option>2</option><option>3</option><option>4</option></select></label>
       <span class="chip" id="t-addr"></span>
+      <select class="baud" id="t-baud" title="Baud rate. Changes apply immediately." aria-label="Baud rate"></select>
+      <button class="btn ghost sm" id="t-auto" title="Reconnect automatically when the connection drops"></button>
       <button class="btn ghost sm" id="t-conn"></button>
       <button class="btn ghost sm" id="t-settings">Port settings…</button>
       <button class="btn ghost sm" id="t-rename">Rename</button>
@@ -295,7 +306,7 @@ function renderTabs() {
   $('#tabs').innerHTML =
     [...S.sessions.values()]
       .map(
-        (s) => `<div class="tab" role="tab" tabindex="0" data-id="${s.id}" aria-selected="${s.id === S.active}">
+        (s) => `<div class="tab" role="tab" tabindex="0" draggable="true" data-id="${s.id}" aria-selected="${s.id === S.active}">
           <span class="st ${stateClass(s)}" data-tog title="${stateTip(s)}"></span><span class="nm" data-rename>${esc(s.name)}</span>${leds(s)}
           <span class="x" data-remove title="Remove this connection">${S.pendingRemove === s.id ? 'Remove?' : '✕'}</span></div>`,
       )
@@ -306,7 +317,7 @@ function renderRail() {
   $('#rail').innerHTML =
     [...S.sessions.values()]
       .map(
-        (s) => `<div class="card" role="button" tabindex="0" data-id="${s.id}" aria-selected="${s.id === S.active}">
+        (s) => `<div class="card" role="button" tabindex="0" draggable="true" data-id="${s.id}" aria-selected="${s.id === S.active}">
           <span class="r1"><span class="st ${stateClass(s)}" data-tog title="${stateTip(s)}"></span><span data-rename>${esc(s.name)}</span>
           <span class="x" data-remove style="margin-left:auto;opacity:.6;cursor:pointer">${S.pendingRemove === s.id ? 'Remove?' : '✕'}</span></span>
           <span class="r2">${typeOf(s.config)} · ${esc(addrOf(s.config))}</span><span class="r2" style="margin-left:-7px">${leds(s, true)}</span></div>`,
@@ -316,7 +327,8 @@ function renderRail() {
 
 function renderPaneHeaders() {
   for (const s of S.sessions.values()) {
-    $('header', s.pane).innerHTML = `<span class="st ${stateClass(s)}" data-tog title="${stateTip(s)}"></span><span data-rename>${esc(s.name)}</span>${leds(s, true)}<span class="chip">${esc(addrOf(s.config))}</span>`;
+    $('header', s.pane).innerHTML = `<span class="st ${stateClass(s)}" data-tog title="${stateTip(s)}"></span><span data-rename>${esc(s.name)}</span>${leds(s, true)}<span class="rt">${s.config.kind === 'serial' ? `<span class="chip">${esc(s.config.port)}</span><select class="baud" aria-label="Baud rate" title="Baud rate. Changes apply immediately.">${baudOptions(s.config.baud)}</select>` : `<span class="chip">${esc(addrOf(s.config))}</span>`}</span>`;
+    $('header', s.pane).draggable = S.layout === 'grid';
     s.pane.dataset.id = s.id;
     s.pane.classList.toggle('active', s.id === S.active);
   }
@@ -325,11 +337,21 @@ function renderPaneHeaders() {
 function renderToolbar() {
   const s = cur();
   $$('#lay button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.l === S.layout)));
-  for (const id of ['t-addr', 't-conn', 't-settings', 't-rename', 't-clear']) $('#' + id).hidden = !s;
+  for (const id of ['t-addr', 't-conn', 't-settings', 't-rename', 't-clear', 't-auto']) $('#' + id).hidden = !s;
+  $('#cols-wrap').hidden = S.layout !== 'grid';
+  $('#grid-cols').value = String(store.get('cols', 'auto'));
+  const serial = s?.config.kind === 'serial';
+  $('#t-baud').hidden = !serial;
+  if (serial) $('#t-baud').innerHTML = baudOptions(s.config.baud);
+  if (s) {
+    const a = $('#t-auto');
+    a.textContent = `Reconnect: ${s.autoReconnect ? 'On' : 'Off'}`;
+    a.setAttribute('aria-pressed', String(!!s.autoReconnect));
+  }
   $('#t-win').hidden = !s || !!popId;
   $('#t-flash').hidden = !!popId;
   if (!s) return;
-  $('#t-addr').textContent = `${typeOf(s.config)} · ${addrOf(s.config)}`;
+  $('#t-addr').textContent = serial ? `Serial · ${s.config.port}` : `${typeOf(s.config)} · ${addrOf(s.config)}`;
   const c = $('#t-conn');
   c.textContent = s.state === 'off' ? 'Connect' : s.state === 'connecting' ? 'Cancel' : 'Disconnect';
   c.className = 'btn sm' + (s.state === 'on' ? ' ghost' : '');
@@ -360,7 +382,8 @@ function renderAll() {
   const none = S.sessions.size === 0;
   $('#empty').hidden = !none;
   $('#sendbar').hidden = none;
-  $('#panes').style.display = ''; // keep grid/flex rules from CSS
+  const cols = store.get('cols', 'auto');
+  $('#panes').style.gridTemplateColumns = S.layout === 'grid' && cols !== 'auto' ? `repeat(${cols}, minmax(0, 1fr))` : '';
   updateTitle();
   requestAnimationFrame(fitAll);
 }
@@ -414,6 +437,8 @@ const visibleName = (id) => $$(`[data-id="${id}"] [data-rename]`).find((e) => e.
 
 // ------------------------------------------------------------------ connection dialog
 const BAUDS = [9600, 19200, 38400, 57600, 74880, 115200, 230400, 460800, 921600, 1500000];
+const baudOptions = (cur) =>
+  [...new Set([...BAUDS, cur])].sort((a, b) => a - b).map((b) => `<option${b === cur ? ' selected' : ''}>${b}</option>`).join('');
 const HINTS = {
   serial: 'A board plugged in by USB. Type a port name such as COM5 if it is not listed.',
   tcp: 'Telnet or raw TCP to a WiFi serial bridge (ESP-Link, ESP3D, ser2net or your own sketch).',
@@ -461,7 +486,8 @@ async function openDialog(editId) {
         <span id="d-scanmsg">Looks for boards via mDNS and probes your local /24 subnet.</span></div>
       <div class="found" id="d-found"></div>
     </div>
-    <div class="frm"><label>Line ending when you press Enter<select id="d-eol">${opt(['CR', 'LF', 'CRLF'], editing?.lineEnd ?? 'CRLF')}</select></label></div>
+    <div class="frm"><label class="full">Line ending when you press Enter<select id="d-eol">${opt(['CR', 'LF', 'CRLF'], editing?.lineEnd ?? 'CRLF')}</select></label>
+      <label class="chk full"><input type="checkbox" id="d-auto"${editing?.autoReconnect ?? true ? ' checked' : ''}> Reconnect automatically when the connection drops (and keep trying until the board is back)</label></div>
     <p class="hint" id="d-hint"></p><p class="err-text" id="d-err" hidden></p>
     <div class="acts"><button type="button" class="btn ghost" id="d-cancel">Cancel</button><button class="btn">${editing ? 'Save' : 'Add session'}</button></div>
   </form>`;
@@ -551,13 +577,15 @@ async function openDialog(editId) {
     }
     const name = q('#d-name').value.trim() || `Board ${S.sessions.size + 1}`;
     const lineEnd = q('#d-eol').value;
+    const autoReconnect = q('#d-auto').checked;
     close();
     if (editing) {
       const wasOn = editing.state !== 'off';
       editing.name = name;
       editing.config = config;
       editing.lineEnd = lineEnd;
-      await call('session_create', { id: editing.id, name, config });
+      editing.autoReconnect = autoReconnect;
+      await call('session_create', { id: editing.id, name, config, auto_reconnect: autoReconnect });
       persist();
       renderAll();
       if (wasOn) {
@@ -566,8 +594,8 @@ async function openDialog(editId) {
       }
     } else {
       const id = 's' + Date.now().toString(36);
-      await call('session_create', { id, name, config });
-      addSession({ id, name, config, lineEnd });
+      await call('session_create', { id, name, config, auto_reconnect: autoReconnect });
+      addSession({ id, name, config, lineEnd, autoReconnect });
       persist();
       renderAll();
       select(id); // added disconnected: the user connects explicitly
@@ -707,6 +735,63 @@ async function openFlashDialog() {
   };
 }
 
+// ------------------------------------------------------------------ drag to reorder
+// Works on grid panes (drag the header), tabs and rail cards. The order is shared by
+// all three layouts and remembered.
+function moveSession(dragId, targetId, before) {
+  if (dragId === targetId || !get(dragId) || !get(targetId)) return;
+  const ids = [...S.sessions.keys()].filter((i) => i !== dragId);
+  ids.splice(ids.indexOf(targetId) + (before ? 0 : 1), 0, dragId);
+  const old = new Map(S.sessions);
+  S.sessions.clear();
+  for (const i of ids) {
+    S.sessions.set(i, old.get(i));
+    $('#panes').append(old.get(i).pane);
+  }
+  persist();
+  renderAll();
+}
+
+function wireDragAndDrop() {
+  let dragId = null;
+  const clear = () => $$('.drop-before, .drop-after, .dragging').forEach((el) => el.classList.remove('drop-before', 'drop-after', 'dragging'));
+  const targetOf = (e) => e.target.closest?.('.pane[data-id], .tab[data-id], .card[data-id]');
+  document.addEventListener('dragstart', (e) => {
+    const src = e.target.closest?.('.tab[data-id], .card[data-id], .pane > header');
+    if (!src) return;
+    dragId = idOf(src);
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', dragId);
+    (src.closest('.pane') ?? src).classList.add('dragging');
+  });
+  const before = (e, t) => {
+    const r = t.getBoundingClientRect();
+    return t.classList.contains('card') ? e.clientY < r.top + r.height / 2 : e.clientX < r.left + r.width / 2;
+  };
+  document.addEventListener('dragover', (e) => {
+    const t = dragId && targetOf(e);
+    if (!t || t.dataset.id === dragId) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    $$('.drop-before, .drop-after').forEach((el) => el.classList.remove('drop-before', 'drop-after'));
+    t.classList.add(before(e, t) ? 'drop-before' : 'drop-after');
+  });
+  document.addEventListener('drop', (e) => {
+    const t = dragId && targetOf(e);
+    if (!t) return;
+    e.preventDefault();
+    const b = before(e, t);
+    const id = dragId;
+    dragId = null;
+    clear();
+    moveSession(id, t.dataset.id, b);
+  });
+  document.addEventListener('dragend', () => {
+    dragId = null;
+    clear();
+  });
+}
+
 // ------------------------------------------------------------------ wiring
 function wire() {
   document.addEventListener('click', (e) => {
@@ -744,6 +829,33 @@ function wire() {
     }
   });
   $('#t-flash').onclick = () => openFlashDialog();
+  document.addEventListener('change', async (e) => {
+    const sel = e.target.closest?.('select.baud');
+    if (!sel) return;
+    const s = get(idOf(sel) ?? S.active);
+    if (!s) return;
+    const baud = Number(sel.value);
+    try {
+      await call('session_set_baud', { id: s.id, baud });
+      if (s.state === 'on') s.term.write(`\x1b[36m-- baud rate set to ${baud} --\x1b[0m\r\n`);
+    } catch (err) {
+      note(String(err), true);
+    }
+    renderAll();
+  });
+  $('#t-auto').onclick = async () => {
+    const s = cur();
+    if (!s) return;
+    s.autoReconnect = !s.autoReconnect;
+    persist();
+    renderToolbar();
+    await call('session_set_auto_reconnect', { id: s.id, on: s.autoReconnect }).catch((e) => note(String(e), true));
+  };
+  $('#grid-cols').onchange = (e) => {
+    store.set('cols', e.target.value);
+    renderAll();
+  };
+  wireDragAndDrop();
   $('#t-conn').onclick = () => toggle(S.active);
   $('#t-settings').onclick = () => openDialog(S.active);
   $('#t-rename').onclick = () => startRename(S.active, visibleName(S.active));
@@ -803,7 +915,8 @@ async function start() {
     }
   }
   for (const info of list) {
-    await call('session_create', { id: info.id, name: info.name, config: info.config });
+    const auto = info.autoReconnect ?? info.auto_reconnect ?? true;
+    await call('session_create', { id: info.id, name: info.name, config: info.config, auto_reconnect: auto });
     const live = (await call('session_list')).find((x) => x.id === info.id);
     const s = addSession({ ...info, ...(live ? { state: live.state, rx: live.rx, tx: live.tx } : {}) });
     await replayBacklog(s);

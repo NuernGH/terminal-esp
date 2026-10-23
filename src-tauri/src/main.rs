@@ -36,8 +36,18 @@ fn list_serial_ports() -> Vec<PortInfo> {
 }
 
 #[tauri::command]
-fn session_create(eng: State<Core>, id: String, name: String, config: Config) {
-    eng.0.create(&id, &name, config);
+fn session_create(eng: State<Core>, id: String, name: String, config: Config, auto_reconnect: Option<bool>) {
+    eng.0.create(&id, &name, config, auto_reconnect.unwrap_or(false));
+}
+
+#[tauri::command]
+fn session_set_baud(eng: State<Core>, id: String, baud: u32) -> Result<(), String> {
+    eng.0.set_baud(&id, baud)
+}
+
+#[tauri::command]
+fn session_set_auto_reconnect(eng: State<Core>, id: String, on: bool) -> Result<(), String> {
+    eng.0.set_auto_reconnect(&id, on)
 }
 
 #[tauri::command]
@@ -217,6 +227,8 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             list_serial_ports,
             session_create,
+            session_set_baud,
+            session_set_auto_reconnect,
             session_rename,
             session_remove,
             session_list,
