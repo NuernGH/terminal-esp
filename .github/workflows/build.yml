@@ -65,7 +65,7 @@ jobs:
           Copy-Item src-tauri/resources/esptool "$dir/esptool" -Recurse
           Copy-Item src-tauri/resources/avrdude "$dir/avrdude" -Recurse
           "Unzip anywhere and run ESP Terminal.exe. No installation needed.`r`nNeeds the Microsoft WebView2 runtime (included with Windows 10 and 11)." | Set-Content "$dir/README.txt"
-          Compress-Archive -Path "$dir" -DestinationPath "portable/ESP-Terminal-$v-portable.zip"
+          Compress-Archive -Path "$dir/*" -DestinationPath "portable/ESP-Terminal-$v-portable.zip"
       - uses: actions/upload-artifact@v4
         with:
           name: esp-terminal-windows-portable
