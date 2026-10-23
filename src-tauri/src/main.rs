@@ -9,7 +9,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tauri::Manager as _;
-use tauri::{AppHandle, Emitter, State, WebviewUrl, WebviewWindowBuilder};
+use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tauri::{AppHandle, Emitter, State, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 
 struct Core(Manager);
 /// Cancel flag of the flash job in progress (only one at a time).
@@ -163,16 +165,63 @@ async fn scan_network(ports: Vec<u16>) -> Result<Vec<scan::Found>, String> {
 /// Opens (or focuses) a separate window that shows one session.
 #[tauri::command]
 async fn open_window(app: AppHandle, session_id: String, title: String) -> Result<(), String> {
+    open_pop(&app, &session_id, &title)
+}
+
+/// Opens (or focuses) the pop-out window of one session.
+fn open_pop(app: &AppHandle, session_id: &str, title: &str) -> Result<(), String> {
     let label = format!("pop-{session_id}");
     if let Some(w) = app.get_webview_window(&label) {
+        let _ = w.unminimize();
         let _ = w.set_focus();
         return Ok(());
     }
-    WebviewWindowBuilder::new(&app, &label, WebviewUrl::App(format!("index.html?session={session_id}").into()))
+    WebviewWindowBuilder::new(app, &label, WebviewUrl::App(format!("index.html?session={session_id}").into()))
         .title(title)
         .inner_size(900.0, 600.0)
         .build()
         .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn show_main(app: &AppHandle) {
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.unminimize();
+        let _ = w.show();
+        let _ = w.set_focus();
+    }
+}
+
+#[derive(Deserialize, Clone)]
+struct TraySession {
+    id: String,
+    name: String,
+}
+
+struct TrayNames(Mutex<Vec<TraySession>>);
+
+fn tray_menu(app: &AppHandle, sessions: &[TraySession]) -> tauri::Result<Menu<tauri::Wry>> {
+    let show = MenuItem::with_id(app, "show", "Show ESP Terminal", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
+    let sep = PredefinedMenuItem::separator(app)?;
+    if sessions.is_empty() {
+        return Menu::with_items(app, &[&show, &sep, &quit]);
+    }
+    let sub = Submenu::with_id(app, "sessions", "Open session in new window", true)?;
+    for s in sessions {
+        sub.append(&MenuItem::with_id(app, format!("open:{}", s.id), &s.name, true, None::<&str>)?)?;
+    }
+    Menu::with_items(app, &[&show, &sub, &sep, &quit])
+}
+
+/// The window sends its session names so the tray menu can list them.
+#[tauri::command]
+fn tray_set_sessions(app: AppHandle, names: State<TrayNames>, sessions: Vec<TraySession>) -> Result<(), String> {
+    *names.0.lock().unwrap() = sessions.clone();
+    if let Some(tray) = app.tray_by_id("main") {
+        let menu = tray_menu(&app, &sessions).map_err(|e| e.to_string())?;
+        tray.set_menu(Some(menu)).map_err(|e| e.to_string())?;
+    }
     Ok(())
 }
 
@@ -299,6 +348,15 @@ fn flash_start(app: AppHandle, job: State<FlashJob>, req: FlashRequest) -> Resul
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .on_window_event(|window, event| {
+            // Closing the main window keeps the app (and its connections) running in the tray.
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                if window.label() == "main" {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+            }
+        })
         .setup(|app| {
             let handle = app.handle().clone();
             let mgr = Manager::new(move |e| {
@@ -309,6 +367,29 @@ fn main() {
             }
             app.manage(Core(mgr));
             app.manage(FlashJob(Mutex::new(None)));
+            app.manage(TrayNames(Mutex::new(Vec::new())));
+            let menu = tray_menu(app.handle(), &[])?;
+            let mut tray = TrayIconBuilder::with_id("main").tooltip("ESP Terminal").menu(&menu).show_menu_on_left_click(false);
+            if let Some(icon) = app.default_window_icon() {
+                tray = tray.icon(icon.clone());
+            }
+            tray.on_menu_event(|app, event| {
+                let id = event.id().as_ref();
+                if id == "show" {
+                    show_main(app);
+                } else if id == "quit" {
+                    app.exit(0);
+                } else if let Some(sid) = id.strip_prefix("open:") {
+                    let name = app.state::<TrayNames>().0.lock().unwrap().iter().find(|s| s.id == sid).map(|s| s.name.clone()).unwrap_or_default();
+                    let _ = open_pop(app, sid, &format!("{name} — ESP Terminal"));
+                }
+            })
+            .on_tray_icon_event(|tray, event| {
+                if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = event {
+                    show_main(tray.app_handle());
+                }
+            })
+            .build(app)?;
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -325,6 +406,7 @@ fn main() {
             session_send_bytes,
             session_resize,
             open_release_page,
+            tray_set_sessions,
             session_set_secret,
             read_file_b64,
             append_file,

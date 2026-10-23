@@ -119,6 +119,9 @@ function mockCall(cmd, a) {
     case 'open_release_page':
       (window.__opened ??= []).push(a.url);
       return Promise.resolve();
+    case 'tray_set_sessions':
+      window.__tray = a.sessions;
+      return Promise.resolve();
     case 'session_resize':
       (window.__resized ??= []).push([a.id, a.cols, a.rows]);
       return Promise.resolve();

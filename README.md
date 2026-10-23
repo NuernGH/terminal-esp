@@ -63,3 +63,7 @@ Every build also makes `ESP-Terminal-<version>-portable.zip` (Actions artifact `
 ## Updates
 
 Every push to `main` publishes a GitHub Release (`v0.1.<run number>`) with the installer and the portable zip. The app checks the latest release a few seconds after starting and shows "⬆ Version x available" in the status bar; click the version number at the right of the status bar to check by hand. The link opens the release page, the update is not installed automatically.
+
+## Tray
+
+Closing the main window hides it to the system tray and keeps all connections running. Click the tray icon to bring it back. Right-click for a menu with "Open session in new window" for each session, and Quit. Every window has a "Stay on top" button.

@@ -76,6 +76,7 @@ function note(msg, isErr = false) {
 
 function persist() {
   if (popId) return;
+  call('tray_set_sessions', { sessions: [...S.sessions.values()].map(({ id, name }) => ({ id, name })) }).catch(() => {});
   store.set(
     'sessions',
     [...S.sessions.values()].map(({ id, name, config, lineEnd, autoReconnect, view, cell, enc, localEcho }) => ({ id, name, config, lineEnd, autoReconnect, view, cell, enc, localEcho })),
@@ -516,6 +517,7 @@ function mountShell() {
       <button class="btn ghost sm" id="t-settings">Port settings…</button>
       <button class="btn ghost sm" id="t-rename">Rename</button>
       <button class="btn ghost sm only-multi" id="t-win"${multi}>New window</button>
+      <button class="btn ghost sm" id="t-top" title="Keep this window above all other windows">Stay on top</button>
       <div class="seg" id="t-view" title="Raw terminal, raw and decoded side by side, or decoded only"><button data-v="raw">Raw</button><button data-v="split">Split</button><button data-v="decoded">Decoded</button><button data-v="aligned" title="Raw and decoded side by side, one row per message">Aligned</button></div>
       <button class="btn ghost sm" id="t-swap" title="Swap the raw and decoded sections">⇄ Swap</button>
       <button class="btn ghost sm" id="t-disp" title="Colours and decoding options">Display…</button>
@@ -1573,6 +1575,16 @@ function wire() {
     const m = e.target.closest('[data-m]');
     if (m) F.runMacro(m.dataset.m);
   });
+  $('#t-top').onclick = async () => {
+    const on = $('#t-top').getAttribute('aria-pressed') !== 'true';
+    try {
+      if (inTauri) await (await import('@tauri-apps/api/window')).getCurrentWindow().setAlwaysOnTop(on);
+      $('#t-top').setAttribute('aria-pressed', String(on));
+      $('#t-top').textContent = on ? '📌 On top' : 'Stay on top';
+    } catch (e) {
+      note(`Cannot change stay on top: ${e}`, true);
+    }
+  };
   $('#t-find').onclick = () => cur() && F.openSearch(cur());
   $('#t-plot').onclick = () => {
     if (!cur()) return;
