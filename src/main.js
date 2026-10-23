@@ -177,10 +177,20 @@ function addSession(info) {
   return s;
 }
 
+/** Telnet servers can ask for the window size; keep the core informed when it changes. */
+function reportSize(s) {
+  if (s.config.kind !== 'tcp' || !s.config.term) return;
+  const key = `${s.term.cols}x${s.term.rows}`;
+  if (s.sizeKey === key) return;
+  s.sizeKey = key;
+  call('session_resize', { id: s.id, cols: s.term.cols, rows: s.term.rows }).catch(() => {});
+}
+
 function fitOne(s) {
   if (!s.slot.clientWidth || !s.slot.clientHeight) return;
   try {
     s.fit.fit();
+    reportSize(s);
   } catch {
     /* terminal not ready yet */
   }
@@ -433,7 +443,11 @@ function onEvent(ev) {
   } else if (ev.type === 'state') {
     const was = s.state;
     s.state = ev.state;
-    if (ev.state === 'on') s.term.write('\x1b[32m-- connected --\x1b[0m\r\n');
+    if (ev.state === 'on') {
+      s.sizeKey = null;
+      reportSize(s);
+      s.term.write('\x1b[32m-- connected --\x1b[0m\r\n');
+    }
     else if (ev.state === 'connecting') {
       if (ev.message) s.term.write(`\x1b[33m-- ${ev.message} --\x1b[0m\r\n`);
     } else if (ev.state === 'off') {
@@ -685,6 +699,7 @@ async function openDialog(editId) {
     <div class="frm" data-for="tcp">
       <label>Host or IP<input id="d-host" value="${esc(c.kind === 'tcp' ? c.host : '')}" placeholder="192.168.1.60" autocomplete="off"></label>
       <label>Port<input id="d-tport" value="${c.kind === 'tcp' ? c.port : 23}" inputmode="numeric"></label>
+      <label class="full">Terminal type reported to a Telnet server<select id="d-term">${[['VT100', 'VT100'], ['VT102', 'VT102'], ['ANSI', 'ANSI'], ['XTERM', 'xterm'], ['XTERM-256COLOR', 'xterm-256color'], ['', 'Do not announce one']].map(([v, l]) => `<option value="${v}"${(editing && c.kind === 'tcp' ? c.term ?? '' : 'VT100') === v ? ' selected' : ''}>${l}</option>`).join('')}</select></label>
       <label class="full">Protocol<select id="d-proto"><option value="telnet"${c.kind === 'tcp' && c.protocol === 'raw' ? '' : ' selected'}>Telnet (strips negotiation bytes)</option><option value="raw"${c.kind === 'tcp' && c.protocol === 'raw' ? ' selected' : ''}>Raw TCP</option></select></label>
     </div>
     <div class="frm" data-for="udp">
@@ -782,7 +797,7 @@ async function openDialog(editId) {
       const pn = port(q('#d-tport').value);
       if (!host) return err('Enter the board’s host name or IP address.');
       if (!(pn > 0)) return err('Enter a port between 1 and 65535.');
-      config = { kind: 'tcp', host, port: pn, protocol: q('#d-proto').value };
+      config = { kind: 'tcp', host, port: pn, protocol: q('#d-proto').value, term: q('#d-term').value };
     } else if (type === 'ws') {
       const url = q('#d-wsurl').value.trim();
       if (!/^wss?:\/\/\S+$/i.test(url)) return err('Enter a URL that starts with ws:// or wss://');

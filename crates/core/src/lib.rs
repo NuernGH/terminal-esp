@@ -57,6 +57,9 @@ pub enum Config {
         /// "telnet" or "raw"
         #[serde(default = "d_none")]
         protocol: String,
+        /// Terminal type announced over Telnet (for example "VT100"); empty means refuse the option.
+        #[serde(default)]
+        term: String,
     },
     Udp {
         host: String,
@@ -172,6 +175,9 @@ struct Session {
     io_active: Arc<AtomicUsize>,
     /// Connections in a row that failed within seconds of opening.
     fast_fails: AtomicU32,
+    /// Terminal window size as `cols << 16 | rows`, reported to Telnet servers.
+    size: Arc<AtomicU32>,
+    naws: Arc<AtomicBool>,
 }
 
 /// Decrements the live-thread counter when an I/O thread ends.
@@ -316,7 +322,7 @@ fn open(cfg: &Config) -> Result<Opened, String> {
             let control = p.try_clone().map_err(|e| e.to_string())?;
             Ok(Opened { reader: Box::new(p), writer: Box::new(writer), telnet: false, eof_on_zero: false, control: Some(control) })
         }
-        Config::Tcp { host, port, protocol } => {
+        Config::Tcp { host, port, protocol, .. } => {
             let addrs = (host.as_str(), *port)
                 .to_socket_addrs()
                 .map_err(|e| format!("Cannot resolve {host}: {e}"))?;
@@ -426,6 +432,8 @@ impl Manager {
                 backlog: Mutex::new(VecDeque::new()),
                 io_active: Arc::new(AtomicUsize::new(0)),
                 fast_fails: AtomicU32::new(0),
+                size: Arc::new(AtomicU32::new(80 << 16 | 24)),
+                naws: Arc::new(AtomicBool::new(false)),
             }),
         );
     }
@@ -624,7 +632,15 @@ impl Manager {
         let (telnet, eof_on_zero) = (opened.telnet, opened.eof_on_zero);
         thread::spawn(move || {
             let _guard = IoGuard(s.io_active.clone());
-            let mut filter = TelnetFilter::default();
+            let term = match s.meta.lock().unwrap().config.clone() {
+                Config::Tcp { term, .. } if !term.is_empty() => Some(term),
+                _ => None,
+            };
+            s.naws.store(false, Ordering::Relaxed);
+            let mut filter = match term {
+                Some(term) if telnet => TelnetFilter::with_terminal(telnet::TermOpts { term, size: s.size.clone(), naws: s.naws.clone() }),
+                _ => TelnetFilter::default(),
+            };
             let mut buf = [0u8; 8192];
             let mut message = None;
             while !stop.load(Ordering::SeqCst) {
@@ -709,6 +725,18 @@ impl Manager {
         Ok(())
     }
 
+    /// Tells the board how big the terminal is (Telnet window size option).
+    pub fn resize(&self, id: &str, cols: u16, rows: u16) -> Result<(), String> {
+        let s = self.get(id)?;
+        s.size.store((cols as u32) << 16 | rows as u32, Ordering::Relaxed);
+        if s.naws.load(Ordering::Relaxed) {
+            if let Some(c) = s.conn.lock().unwrap().as_ref() {
+                let _ = c.tx.send(telnet::naws_bytes(cols, rows));
+            }
+        }
+        Ok(())
+    }
+
     pub fn send(&self, id: &str, data: &[u8]) -> Result<(), String> {
         let s = self.get(id)?;
         let conn = s.conn.lock().unwrap();
@@ -759,7 +787,7 @@ mod tests {
         let events = Arc::new(Mutex::new(Vec::<Event>::new()));
         let sink = events.clone();
         let m = Manager::new(move |e| sink.lock().unwrap().push(e));
-        m.create("a", "Test", Config::Tcp { host: "127.0.0.1".into(), port, protocol: "telnet".into() }, false);
+        m.create("a", "Test", Config::Tcp { host: "127.0.0.1".into(), port, protocol: "telnet".into(), term: String::new() }, false);
         m.connect("a").unwrap();
         assert!(wait_for(|| m.list()[0].state == ConnState::On));
         assert!(wait_for(|| m.backlog("a").unwrap() == b"hello\r\n"));
@@ -779,7 +807,7 @@ mod tests {
         let sink = events.clone();
         let m = Manager::new(move |e| sink.lock().unwrap().push(e));
         // Port 1 on localhost is closed.
-        m.create("b", "Bad", Config::Tcp { host: "127.0.0.1".into(), port: 1, protocol: "raw".into() }, false);
+        m.create("b", "Bad", Config::Tcp { host: "127.0.0.1".into(), port: 1, protocol: "raw".into(), term: String::new() }, false);
         m.connect("b").unwrap();
         assert!(wait_for(|| events
             .lock()
@@ -827,7 +855,7 @@ mod tests {
         let sink = events.clone();
         let m = Manager::new(move |e| sink.lock().unwrap().push(e));
         m.set_retry_delay(Duration::from_millis(50));
-        m.create("r", "Reboot", Config::Tcp { host: "127.0.0.1".into(), port, protocol: "raw".into() }, true);
+        m.create("r", "Reboot", Config::Tcp { host: "127.0.0.1".into(), port, protocol: "raw".into(), term: String::new() }, true);
         m.connect("r").unwrap();
         assert!(wait_for(|| m.backlog("r").unwrap().ends_with(b"second\n")));
         assert_eq!(m.list()[0].state, ConnState::On);
@@ -844,7 +872,7 @@ mod tests {
         drop(probe); // nothing listens yet
         let m = Manager::new(|_| {});
         m.set_retry_delay(Duration::from_millis(50));
-        m.create("w", "Late", Config::Tcp { host: "127.0.0.1".into(), port, protocol: "raw".into() }, true);
+        m.create("w", "Late", Config::Tcp { host: "127.0.0.1".into(), port, protocol: "raw".into(), term: String::new() }, true);
         m.connect("w").unwrap();
         thread::sleep(Duration::from_millis(300));
         assert_eq!(m.list()[0].state, ConnState::Connecting);
@@ -860,7 +888,7 @@ mod tests {
     fn disconnect_stops_the_retry_loop() {
         let m = Manager::new(|_| {});
         m.set_retry_delay(Duration::from_millis(30));
-        m.create("x", "Gone", Config::Tcp { host: "127.0.0.1".into(), port: 1, protocol: "raw".into() }, true);
+        m.create("x", "Gone", Config::Tcp { host: "127.0.0.1".into(), port: 1, protocol: "raw".into(), term: String::new() }, true);
         m.connect("x").unwrap();
         thread::sleep(Duration::from_millis(150));
         m.disconnect("x").unwrap();
@@ -877,7 +905,7 @@ mod tests {
             drop(c);
         });
         let m = Manager::new(|_| {});
-        m.create("n", "Once", Config::Tcp { host: "127.0.0.1".into(), port, protocol: "raw".into() }, false);
+        m.create("n", "Once", Config::Tcp { host: "127.0.0.1".into(), port, protocol: "raw".into(), term: String::new() }, false);
         m.connect("n").unwrap();
         thread::sleep(Duration::from_millis(400));
         assert_eq!(m.list()[0].state, ConnState::Off);
@@ -886,7 +914,7 @@ mod tests {
     #[test]
     fn baud_and_auto_reconnect_settings() {
         let m = Manager::new(|_| {});
-        m.create("t", "Tcp", Config::Tcp { host: "h".into(), port: 1, protocol: "raw".into() }, false);
+        m.create("t", "Tcp", Config::Tcp { host: "h".into(), port: 1, protocol: "raw".into(), term: String::new() }, false);
         assert!(m.set_baud("t", 9600).unwrap_err().contains("serial"));
         m.create("s", "Ser", Config::Serial { port: "COM9".into(), baud: 115200, data_bits: 8, parity: "none".into(), stop_bits: 1, flow: "none".into(), reset_on_connect: false }, false);
         m.set_baud("s", 921600).unwrap(); // not connected: just remembered
@@ -907,7 +935,7 @@ mod tests {
         });
         let m = Manager::new(|_| {});
         m.set_retry_delay(Duration::from_millis(10));
-        m.create("f", "Flaky", Config::Tcp { host: "127.0.0.1".into(), port, protocol: "raw".into() }, true);
+        m.create("f", "Flaky", Config::Tcp { host: "127.0.0.1".into(), port, protocol: "raw".into(), term: String::new() }, true);
         m.connect("f").unwrap();
         thread::sleep(Duration::from_millis(800));
         assert_ne!(m.list()[0].state, ConnState::Off, "auto-reconnect keeps going");
@@ -950,7 +978,7 @@ mod tests {
             thread::sleep(Duration::from_secs(2));
         });
         let m = Manager::new(|_| {});
-        m.create("p", "P", Config::Tcp { host: "127.0.0.1".into(), port, protocol: "raw".into() }, false);
+        m.create("p", "P", Config::Tcp { host: "127.0.0.1".into(), port, protocol: "raw".into(), term: String::new() }, false);
         m.connect("p").unwrap();
         assert!(wait_for(|| m.list()[0].state == ConnState::On));
         m.disconnect("p").unwrap();

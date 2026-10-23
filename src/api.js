@@ -113,6 +113,9 @@ function mockCall(cmd, a) {
       emit({ type: 'stats', rows: [{ id: a.id, rx: s.rx, tx: s.tx }] });
       return Promise.resolve();
     }
+    case 'session_resize':
+      (window.__resized ??= []).push([a.id, a.cols, a.rows]);
+      return Promise.resolve();
     case 'session_send_bytes': {
       const s = sim.sessions.get(a.id);
       if (s.state !== 'on') return Promise.reject('Not connected');

@@ -82,6 +82,11 @@ fn session_send(eng: State<Core>, id: String, data: String) -> Result<(), String
 }
 
 #[tauri::command]
+fn session_resize(eng: State<Core>, id: String, cols: u16, rows: u16) -> Result<(), String> {
+    eng.0.resize(&id, cols, rows)
+}
+
+#[tauri::command]
 fn session_send_bytes(eng: State<Core>, id: String, data: String) -> Result<(), String> {
     let bytes = STANDARD.decode(data).map_err(|e| e.to_string())?;
     eng.0.send(&id, &bytes)
@@ -286,6 +291,7 @@ fn main() {
             session_disconnect,
             session_send,
             session_send_bytes,
+            session_resize,
             read_file_b64,
             append_file,
             session_backlog,
