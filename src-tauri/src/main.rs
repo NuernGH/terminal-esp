@@ -82,6 +82,34 @@ fn session_send(eng: State<Core>, id: String, data: String) -> Result<(), String
 }
 
 #[tauri::command]
+fn session_send_bytes(eng: State<Core>, id: String, data: String) -> Result<(), String> {
+    let bytes = STANDARD.decode(data).map_err(|e| e.to_string())?;
+    eng.0.send(&id, &bytes)
+}
+
+/// Reads a whole file for sending to a board (base64, so binary survives).
+#[tauri::command]
+fn read_file_b64(path: String) -> Result<String, String> {
+    std::fs::read(&path).map(|b| STANDARD.encode(b)).map_err(|e| format!("Cannot read {path}: {e}"))
+}
+
+/// Appends data to a log file, creating it (and its folder) when needed.
+#[tauri::command]
+fn append_file(path: String, data: String) -> Result<(), String> {
+    use std::io::Write;
+    let bytes = STANDARD.decode(data).map_err(|e| e.to_string())?;
+    if let Some(dir) = std::path::Path::new(&path).parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .and_then(|mut f| f.write_all(&bytes))
+        .map_err(|e| format!("Cannot write {path}: {e}"))
+}
+
+#[tauri::command]
 fn session_backlog(eng: State<Core>, id: String) -> Result<String, String> {
     eng.0.backlog(&id).map(|b| STANDARD.encode(b))
 }
@@ -257,6 +285,9 @@ fn main() {
             session_connect,
             session_disconnect,
             session_send,
+            session_send_bytes,
+            read_file_b64,
+            append_file,
             session_backlog,
             session_clear,
             scan_network,

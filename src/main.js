@@ -4,6 +4,7 @@ import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { call, onSession, onFlash, b64ToBytes, inTauri } from './api.js';
 import { FORMATS, formatBytes, hexToRgb } from './decode.js';
+import * as F from './features.js';
 
 const params = new URLSearchParams(location.search);
 const popId = params.get('session');
@@ -56,8 +57,8 @@ const stateClass = (s) => (s.state === 'on' ? 'on' : s.state === 'connecting' ? 
 const stateTip = (s) =>
   s.state === 'off' ? 'Disconnected. Click to connect' : s.state === 'connecting' ? 'Connecting. Click to cancel' : 'Connected. Click to disconnect';
 const addrOf = (c) =>
-  c.kind === 'serial' ? `${c.port} · ${c.baud}` : c.kind === 'tcp' ? `${c.host}:${c.port}` : `udp://${c.host}:${c.port}`;
-const typeOf = (c) => (c.kind === 'serial' ? 'Serial' : c.kind === 'tcp' ? (c.protocol === 'telnet' ? 'Telnet' : 'TCP') : 'UDP');
+  c.kind === 'serial' ? `${c.port} · ${c.baud}` : c.kind === 'tcp' ? `${c.host}:${c.port}` : c.kind === 'ws' ? c.url : `udp://${c.host}:${c.port}`;
+const typeOf = (c) => (c.kind === 'serial' ? 'Serial' : c.kind === 'ws' ? 'WebSocket' : c.kind === 'tcp' ? (c.protocol === 'telnet' ? 'Telnet' : 'TCP') : 'UDP');
 
 const leds = (s, full) =>
   `<span class="io"><i class="led rx" data-led="rx" data-sid="${s.id}"></i>RX${full ? ` <b data-cnt="rx" data-sid="${s.id}"></b>` : ''}<i class="led tx" data-led="tx" data-sid="${s.id}"></i>TX${full ? ` <b data-cnt="tx" data-sid="${s.id}"></b>` : ''}</span>`;
@@ -76,7 +77,7 @@ function persist() {
   if (popId) return;
   store.set(
     'sessions',
-    [...S.sessions.values()].map(({ id, name, config, lineEnd, autoReconnect, view, cell }) => ({ id, name, config, lineEnd, autoReconnect, view, cell })),
+    [...S.sessions.values()].map(({ id, name, config, lineEnd, autoReconnect, view, cell, enc, localEcho }) => ({ id, name, config, lineEnd, autoReconnect, view, cell, enc, localEcho })),
   );
 }
 
@@ -110,6 +111,8 @@ function addSession(info) {
     autoReconnect: info.autoReconnect ?? info.auto_reconnect ?? true,
     view: info.view ?? (info.decode ? 'split' : 'raw'),
     cell: info.cell ?? null,
+    enc: info.enc ?? 'utf-8',
+    localEcho: !!info.localEcho,
     decode: (info.view ?? (info.decode ? 'split' : 'raw')) !== 'raw',
     rec: [],
     state: info.state || 'off',
@@ -125,6 +128,7 @@ function addSession(info) {
     fontSize: 13,
     cursorBlink: true,
     scrollback: 20000,
+    allowProposedApi: true,
     convertEol: true,
     theme: termTheme(),
   });
@@ -152,7 +156,12 @@ function addSession(info) {
   s.pane.addEventListener('mousedown', () => {
     if (S.layout === 'grid') select(s.id);
   });
+  F.attachSearch(s);
   s.term.attachCustomKeyEventHandler((e) => {
+    if (e.type === 'keydown' && e.ctrlKey && !e.shiftKey && e.key === 'f') {
+      F.openSearch(s);
+      return false;
+    }
     if (e.type === 'keydown' && e.ctrlKey && !e.shiftKey && e.key === 'c' && s.term.hasSelection()) {
       navigator.clipboard?.writeText(s.term.getSelection()).catch(() => {});
       return false;
@@ -161,6 +170,7 @@ function addSession(info) {
   });
   s.term.onData((d) => {
     const eol = EOL[s.lineEnd] || '\r';
+    if (s.localEcho && s.state === 'on') s.term.write(d.replace(/\r/g, '\r\n').replace(/\x7f/g, '\b \b'));
     sendText(s, d.replace(/\r/g, eol));
   });
   S.sessions.set(s.id, s);
@@ -288,6 +298,31 @@ function applyDisplay() {
   requestAnimationFrame(fitAll);
 }
 
+const bytesToB64 = (bytes) => {
+  let bin = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(bin);
+};
+
+/** Sends raw bytes (hex macros, files). Throws on failure when `quiet`, otherwise shows a note. */
+async function sendBytes(s, bytes, quiet) {
+  if (s.state !== 'on') {
+    if (quiet) throw new Error('Not connected');
+    note('Not connected. Click the status dot to connect.', true);
+    return false;
+  }
+  try {
+    await call('session_send_bytes', { id: s.id, data: bytesToB64(bytes) });
+    addRecord(s, 'tx', bytes);
+    if (!quiet && s.log) F.logWrite(s, 'tx', bytes);
+    return true;
+  } catch (e) {
+    if (quiet) throw e;
+    note(String(e), true);
+    return false;
+  }
+}
+
 async function sendText(s, text, echo) {
   if (!text) return true;
   if (s.state !== 'on') {
@@ -295,8 +330,16 @@ async function sendText(s, text, echo) {
     return false;
   }
   try {
-    await call('session_send', { id: s.id, data: text });
-    addRecord(s, 'tx', new TextEncoder().encode(text));
+    let sent;
+    if (s.enc && s.enc !== 'utf-8') {
+      sent = F.encodeText(s.enc, text);
+      await call('session_send_bytes', { id: s.id, data: bytesToB64(sent) });
+    } else {
+      await call('session_send', { id: s.id, data: text });
+      sent = new TextEncoder().encode(text);
+    }
+    addRecord(s, 'tx', sent);
+    if (s.log) F.logWrite(s, 'tx', sent);
     if (echo !== undefined) echoTx(s, echo);
     return true;
   } catch (e) {
@@ -373,8 +416,10 @@ function onEvent(ev) {
   if (!s) return;
   if (ev.type === 'data') {
     const bytes = b64ToBytes(ev.data);
-    s.term.write(bytes);
+    s.term.write(F.forTerminal(s.enc, bytes));
     addRecord(s, 'rx', bytes);
+    if (s.log) F.logWrite(s, 'rx', bytes);
+    if (s.plot) F.plotFeed(s, F.textOf(s.enc, bytes));
     s.rxAt = Date.now();
   } else if (ev.type === 'meta') {
     s.name = ev.name;
@@ -422,6 +467,9 @@ function mountShell() {
       <div class="seg" id="t-view" title="Raw terminal, raw and decoded side by side, or decoded only"><button data-v="raw">Raw</button><button data-v="split">Split</button><button data-v="decoded">Decoded</button><button data-v="aligned" title="Raw and decoded side by side, one row per message">Aligned</button></div>
       <button class="btn ghost sm" id="t-swap" title="Swap the raw and decoded sections">⇄ Swap</button>
       <button class="btn ghost sm" id="t-disp" title="Colours and decoding options">Display…</button>
+      <button class="btn ghost sm" id="t-find" title="Search the terminal (Ctrl+F)">Search</button>
+      <button class="btn ghost sm" id="t-plot" title="Plot numbers found in the incoming text">Plot</button>
+      <button class="btn ghost sm" id="t-log" title="Save everything to a log file"></button>
       <button class="btn ghost sm" id="t-clear">Clear</button>
       <button class="btn sm" id="t-flash">Flash .bin…</button>
     </div>
@@ -430,7 +478,8 @@ function mountShell() {
       <section class="stage">
         <div class="tabs" id="tabs" role="tablist"></div>
         <div class="panes" id="panes"><div class="empty" id="empty"><h2>No connections yet</h2>Add a board by serial port, TCP/Telnet or UDP. Give it a name so you can tell your boards apart.<br><br><button class="btn" id="b-new2">+ New connection</button></div></div>
-        <form class="sendbar" id="sendbar"><input id="send-in" placeholder="Type a command and press Enter…" autocomplete="off" spellcheck="false" aria-label="Send to board"><button class="btn sm">Send</button></form>
+        <div class="macros" id="macros"></div>
+        <form class="sendbar" id="sendbar"><input id="send-in" placeholder="Type a command and press Enter…" autocomplete="off" spellcheck="false" aria-label="Send to board"><button class="btn sm">Send</button><button type="button" class="btn ghost sm" id="b-file" title="Send a file to the board">Send file…</button></form>
       </section>
     </div>
     <div class="status" id="status"></div>`;
@@ -476,7 +525,7 @@ function renderPaneHeaders() {
 function renderToolbar() {
   const s = cur();
   $$('#lay button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.l === S.layout)));
-  for (const id of ['t-addr', 't-conn', 't-settings', 't-rename', 't-clear', 't-auto', 't-view']) $('#' + id).hidden = !s;
+  for (const id of ['t-addr', 't-conn', 't-settings', 't-rename', 't-clear', 't-auto', 't-view', 't-find', 't-plot', 't-log']) $('#' + id).hidden = !s;
   $('#t-swap').hidden = !s || s.view !== 'split';
   $('#cols-wrap').hidden = S.layout !== 'grid';
   $('#grid-cols').value = String(store.get('cols', 'auto'));
@@ -488,6 +537,9 @@ function renderToolbar() {
     a.textContent = `Reconnect: ${s.autoReconnect ? 'On' : 'Off'}`;
     a.setAttribute('aria-pressed', String(!!s.autoReconnect));
     $$('#t-view button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.v === s.view)));
+    $('#t-plot').setAttribute('aria-pressed', String(!!s.plot));
+    $('#t-log').textContent = s.log ? '● Logging' : 'Log…';
+    $('#t-log').setAttribute('aria-pressed', String(!!s.log));
   }
   $('#t-win').hidden = !s || !!popId;
   $('#t-flash').hidden = !!popId;
@@ -601,6 +653,7 @@ const HINTS = {
   serial: 'A board plugged in by USB. Type a port name such as COM5 if it is not listed.',
   tcp: 'Telnet or raw TCP to a WiFi serial bridge (ESP-Link, ESP3D, ser2net or your own sketch).',
   udp: 'Connectionless datagrams. Use the same local port in the board firmware.',
+  ws: 'A WebSocket endpoint, for example the one an ESP32 web server or a browser tool exposes. Text and binary messages are shown as a stream.',
 };
 
 async function openDialog(editId) {
@@ -618,6 +671,7 @@ async function openDialog(editId) {
       <button type="button" data-t="serial">Serial<small>COM port (USB)</small></button>
       <button type="button" data-t="tcp">TCP / Telnet<small>WiFi serial bridge</small></button>
       <button type="button" data-t="udp">UDP<small>Datagrams</small></button>
+      <button type="button" data-t="ws">WebSocket<small>ws:// or wss://</small></button>
     </div>
     <div class="frm" data-for="serial">
       <label class="full">Port<input id="d-port" list="d-ports" value="${esc(c.kind === 'serial' ? c.port : ports[0]?.name ?? '')}" autocomplete="off"><datalist id="d-ports">${ports.map((p) => `<option value="${esc(p.name)}">${esc(p.description)}</option>`).join('')}</datalist></label>
@@ -638,13 +692,18 @@ async function openDialog(editId) {
       <label>Remote port<input id="d-uport" value="${c.kind === 'udp' ? c.port : 4210}" inputmode="numeric"></label>
       <label>Local listen port (0 = automatic)<input id="d-ulocal" value="${c.kind === 'udp' ? c.local_port : 4210}" inputmode="numeric"></label>
     </div>
+    <div class="frm" data-for="ws">
+      <label class="full">URL<input id="d-wsurl" value="${esc(c.kind === 'ws' ? c.url : '')}" placeholder="ws://192.168.1.60:81/" autocomplete="off" spellcheck="false"></label>
+    </div>
     <div class="scanbox" id="d-scanbox">
       <div class="top"><button type="button" class="btn ghost sm" id="d-scan">Scan network</button>
         <label style="display:flex;gap:5px;align-items:center;font-size:11.5px;color:var(--mute)">Ports <input id="d-sports" value="23, 8266"></label>
         <span id="d-scanmsg">Looks for boards via mDNS and probes your local /24 subnet.</span></div>
       <div class="found" id="d-found"></div>
     </div>
-    <div class="frm"><label class="full">Line ending when you press Enter<select id="d-eol">${opt(['CR', 'LF', 'CRLF'], editing?.lineEnd ?? 'CRLF')}</select></label>
+    <div class="frm"><label>Line ending when you press Enter<select id="d-eol">${opt(['CR', 'LF', 'CRLF'], editing?.lineEnd ?? 'CRLF')}</select></label>
+      <label>Text encoding<select id="d-enc">${F.ENCODINGS.map(([v, l]) => `<option value="${v}"${(editing?.enc ?? 'utf-8') === v ? ' selected' : ''}>${l}</option>`).join('')}</select></label>
+      <label class="chk full"><input type="checkbox" id="d-echo"${editing?.localEcho ? ' checked' : ''}> Local echo: show what I type (for boards that do not echo it back)</label>
       <label class="chk full"><input type="checkbox" id="d-auto"${editing?.autoReconnect ?? true ? ' checked' : ''}> Reconnect automatically when the connection drops (and keep trying until the board is back)</label></div>
     <p class="hint" id="d-hint"></p><p class="err-text" id="d-err" hidden></p>
     <div class="acts"><button type="button" class="btn ghost" id="d-cancel">Cancel</button><button class="btn">${editing ? 'Save' : 'Add session'}</button></div>
@@ -656,7 +715,7 @@ async function openDialog(editId) {
     type = t;
     $$('#d-type button', ov).forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.t === t)));
     $$('[data-for]', ov).forEach((f) => (f.hidden = f.dataset.for !== t));
-    q('#d-scanbox').hidden = t === 'serial';
+    q('#d-scanbox').hidden = t === 'serial' || t === 'ws';
     q('#d-hint').textContent = HINTS[t];
   };
   setType(type);
@@ -724,6 +783,10 @@ async function openDialog(editId) {
       if (!host) return err('Enter the board’s host name or IP address.');
       if (!(pn > 0)) return err('Enter a port between 1 and 65535.');
       config = { kind: 'tcp', host, port: pn, protocol: q('#d-proto').value };
+    } else if (type === 'ws') {
+      const url = q('#d-wsurl').value.trim();
+      if (!/^wss?:\/\/\S+$/i.test(url)) return err('Enter a URL that starts with ws:// or wss://');
+      config = { kind: 'ws', url };
     } else {
       const host = q('#d-uhost').value.trim();
       const pn = port(q('#d-uport').value);
@@ -735,6 +798,8 @@ async function openDialog(editId) {
     }
     const name = q('#d-name').value.trim() || `Board ${S.sessions.size + 1}`;
     const lineEnd = q('#d-eol').value;
+    const enc = q('#d-enc').value;
+    const localEcho = q('#d-echo').checked;
     const autoReconnect = q('#d-auto').checked;
     close();
     if (editing) {
@@ -742,6 +807,8 @@ async function openDialog(editId) {
       editing.name = name;
       editing.config = config;
       editing.lineEnd = lineEnd;
+      editing.enc = enc;
+      editing.localEcho = localEcho;
       editing.autoReconnect = autoReconnect;
       await call('session_create', { id: editing.id, name, config, autoReconnect });
       persist();
@@ -753,7 +820,7 @@ async function openDialog(editId) {
     } else {
       const id = 's' + Date.now().toString(36);
       await call('session_create', { id, name, config, autoReconnect });
-      addSession({ id, name, config, lineEnd, autoReconnect });
+      addSession({ id, name, config, lineEnd, autoReconnect, enc, localEcho });
       persist();
       renderAll();
       select(id); // added disconnected: the user connects explicitly
@@ -1282,6 +1349,21 @@ function wire() {
   document.addEventListener('click', (e) => e.target.closest?.('.swapbtn') && swap());
   wireDivider();
   wireGridResize();
+  F.init({ S, get, cur, call, note, esc, $, $$, store, EOL, sendText, sendBytes, renderToolbar, fitAll });
+  F.renderMacros();
+  $('#macros').addEventListener('click', (e) => {
+    if (e.target.closest('#m-edit')) return F.openMacroDialog();
+    const m = e.target.closest('[data-m]');
+    if (m) F.runMacro(m.dataset.m);
+  });
+  $('#t-find').onclick = () => cur() && F.openSearch(cur());
+  $('#t-plot').onclick = () => {
+    if (!cur()) return;
+    F.togglePlot(cur());
+    renderToolbar();
+  };
+  $('#t-log').onclick = () => cur() && F.openLogDialog(cur());
+  $('#b-file').onclick = () => F.openSendFileDialog();
   $('#t-disp').onclick = openDisplayDialog;
   document.addEventListener('change', (e) => {
     const sel = e.target.closest?.('select.decfmt');

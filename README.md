@@ -16,6 +16,8 @@ backend) and xterm.js.
 - Layouts: Tabs, Rail, Grid. Drag grid blocks (by their header), tabs or rail cards to reorder them; the Grid layout also has a column count.
 - Baud rate dropdown on every serial session: changes apply immediately, without reconnecting.
 - Auto-reconnect (per session, on by default): if the connection drops, or the board is not there yet, the app keeps retrying every 2 seconds until you click the status dot. Any session can pop out into its own window.
+- **WebSocket** connections (`ws://` and `wss://`) next to Serial, TCP/Telnet and UDP.
+- **Search** (Ctrl+F or the Search button), **Log…** to a file (timestamped text or raw bytes), **command buttons** (text or hex, shown above the input line), **Send file…** (raw blocks or line by line with a pause), per-connection **text encoding** and **local echo**, and a live **Plot** panel that graphs numbers in the incoming text (`temp=22.4 hum=41` gives two named series).
 - **Arduino upload** (Flash dialog, Arduino tab): AVR boards (Uno, Nano, Pro Mini, Mega, custom) via the bundled avrdude. Needs a compiled `.hex` (Arduino IDE: Sketch → Export Compiled Binary); `.ino` sources are not compiled by this app.
 - **Flash .bin** (toolbar button): over a serial cable with the bundled esptool (any ESP chip,
   chosen start address, optional full erase), or over WiFi with the Arduino OTA protocol

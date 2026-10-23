@@ -64,6 +64,10 @@ pub enum Config {
         #[serde(default)]
         local_port: u16,
     },
+    /// ws:// or wss:// URL.
+    Ws {
+        url: String,
+    },
 }
 
 impl Config {
@@ -73,6 +77,7 @@ impl Config {
             Config::Serial { port, baud, .. } => format!("{port} · {baud}"),
             Config::Tcp { host, port, .. } => format!("{host}:{port}"),
             Config::Udp { host, port, .. } => format!("udp://{host}:{port}"),
+            Config::Ws { url } => url.clone(),
         }
     }
 }
@@ -204,6 +209,53 @@ struct Opened {
     control: Option<Box<dyn serialport::SerialPort>>,
 }
 
+/// A WebSocket seen as a byte stream: incoming messages are concatenated, outgoing writes become one message each.
+struct WsIo {
+    ws: Arc<Mutex<tungstenite::WebSocket<tungstenite::stream::MaybeTlsStream<TcpStream>>>>,
+    pending: Vec<u8>,
+}
+
+impl Read for WsIo {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        use tungstenite::{Error, Message};
+        if self.pending.is_empty() {
+            let msg = self.ws.lock().unwrap().read();
+            match msg {
+                Ok(Message::Text(t)) => self.pending = t.as_bytes().to_vec(),
+                Ok(Message::Binary(b)) => self.pending = b.to_vec(),
+                Ok(Message::Close(_)) | Err(Error::ConnectionClosed | Error::AlreadyClosed) => return Ok(0),
+                Ok(_) => return Err(io::ErrorKind::TimedOut.into()),
+                Err(Error::Io(e)) if matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut) => {
+                    // Give a waiting writer a chance to take the lock before the next read.
+                    thread::sleep(Duration::from_millis(5));
+                    return Err(io::ErrorKind::TimedOut.into());
+                }
+                Err(Error::Io(e)) => return Err(e),
+                Err(e) => return Err(io::Error::other(e.to_string())),
+            }
+        }
+        let n = self.pending.len().min(buf.len());
+        buf[..n].copy_from_slice(&self.pending[..n]);
+        self.pending.drain(..n);
+        Ok(n)
+    }
+}
+
+impl Write for WsIo {
+    fn write(&mut self, data: &[u8]) -> io::Result<usize> {
+        use tungstenite::Message;
+        let msg = match std::str::from_utf8(data) {
+            Ok(t) => Message::text(t),
+            Err(_) => Message::binary(data.to_vec()),
+        };
+        self.ws.lock().unwrap().send(msg).map_err(|e| io::Error::other(e.to_string()))?;
+        Ok(data.len())
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
 struct UdpIo(UdpSocket);
 
 impl Read for UdpIo {
@@ -287,6 +339,24 @@ fn open(cfg: &Config) -> Result<Opened, String> {
                 }
             }
             Err(last)
+        }
+        Config::Ws { url } => {
+            let (mut ws, _) = tungstenite::connect(url.as_str()).map_err(|e| format!("Cannot connect to {url}: {e}"))?;
+            use tungstenite::stream::MaybeTlsStream;
+            match ws.get_mut() {
+                MaybeTlsStream::Plain(t) => t.set_read_timeout(Some(POLL)),
+                MaybeTlsStream::NativeTls(t) => t.get_mut().set_read_timeout(Some(POLL)),
+                _ => Ok(()),
+            }
+            .map_err(|e| e.to_string())?;
+            let ws = Arc::new(Mutex::new(ws));
+            Ok(Opened {
+                reader: Box::new(WsIo { ws: ws.clone(), pending: Vec::new() }),
+                writer: Box::new(WsIo { ws, pending: Vec::new() }),
+                telnet: false,
+                eof_on_zero: true,
+                control: None,
+            })
         }
         Config::Udp { host, port, local_port } => {
             let sock = UdpSocket::bind(("0.0.0.0", *local_port))
@@ -843,6 +913,32 @@ mod tests {
         assert_ne!(m.list()[0].state, ConnState::Off, "auto-reconnect keeps going");
         m.disconnect("f").unwrap();
         assert!(wait_for(|| m.list()[0].state == ConnState::Off));
+    }
+
+    #[test]
+    fn websocket_session_sends_and_receives() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let _srv = thread::spawn(move || {
+            let (c, _) = listener.accept().unwrap();
+            let mut ws = tungstenite::accept(c).unwrap();
+            ws.send(tungstenite::Message::text("hello")).unwrap();
+            let got = ws.read().unwrap();
+            ws.send(got).unwrap(); // echo
+            thread::sleep(Duration::from_millis(500));
+        });
+        let seen = Arc::new(Mutex::new(Vec::<u8>::new()));
+        let sink = seen.clone();
+        let m = Manager::new(move |e| {
+            if let Event::Data { bytes, .. } = e {
+                sink.lock().unwrap().extend(bytes);
+            }
+        });
+        m.create("w", "WS", Config::Ws { url: format!("ws://127.0.0.1:{port}") }, false);
+        m.connect("w").unwrap();
+        assert!(wait_for(|| seen.lock().unwrap().starts_with(b"hello")));
+        m.send("w", b"ping").unwrap();
+        assert!(wait_for(|| seen.lock().unwrap().ends_with(b"ping")));
     }
 
     #[test]

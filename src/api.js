@@ -113,6 +113,19 @@ function mockCall(cmd, a) {
       emit({ type: 'stats', rows: [{ id: a.id, rx: s.rx, tx: s.tx }] });
       return Promise.resolve();
     }
+    case 'session_send_bytes': {
+      const s = sim.sessions.get(a.id);
+      if (s.state !== 'on') return Promise.reject('Not connected');
+      s.tx += atob(a.data).length;
+      emit({ type: 'stats', rows: [{ id: a.id, rx: s.rx, tx: s.tx }] });
+      (window.__sentBytes ??= []).push(a.data);
+      return Promise.resolve();
+    }
+    case 'read_file_b64':
+      return a.path.includes('missing') ? Promise.reject(`Cannot read ${a.path}`) : Promise.resolve(strToB64('line one\nline two\nline three\n'));
+    case 'append_file':
+      (window.__logged ??= []).push([a.path, a.data]);
+      return Promise.resolve();
     case 'session_backlog':
       return Promise.resolve('');
     case 'session_clear':
