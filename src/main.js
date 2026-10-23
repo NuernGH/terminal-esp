@@ -448,6 +448,12 @@ function renderTabs() {
 }
 
 function renderRail() {
+  // Rebuilding would close a baud dropdown that is open; catch up once it loses focus.
+  if (document.activeElement?.matches?.('#rail select')) {
+    S.railDirty = true;
+    return;
+  }
+  S.railDirty = false;
   $('#rail').innerHTML =
     [...S.sessions.values()]
       .map(
@@ -1216,6 +1222,7 @@ function wire() {
     }
     const lay = t.closest('#lay button');
     if (lay) return setLayout(lay.dataset.l);
+    if (t.closest('select')) return;
     const item = t.closest('.tab[data-id], .card[data-id]');
     if (item) return select(item.dataset.id);
   });
@@ -1231,12 +1238,14 @@ function wire() {
     }
   });
   $('#t-flash').onclick = () => openFlashDialog();
+  document.addEventListener('focusout', (e) => e.target.matches?.('#rail select') && S.railDirty && setTimeout(renderRail, 0));
   document.addEventListener('change', async (e) => {
     const sel = e.target.closest?.('select.baud');
     if (!sel) return;
     const s = get(idOf(sel) ?? S.active);
     if (!s) return;
     const baud = Number(sel.value);
+    sel.blur();
     try {
       await call('session_set_baud', { id: s.id, baud });
       if (s.state === 'on') s.term.write(`\x1b[36m-- baud rate set to ${baud} --\x1b[0m\r\n`);
