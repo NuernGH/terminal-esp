@@ -454,7 +454,7 @@ function renderRail() {
         (s) => `<div class="card" role="button" tabindex="0" data-id="${s.id}" aria-selected="${s.id === S.active}">
           <span class="r1"><span class="st ${stateClass(s)}" data-tog title="${stateTip(s)}"></span><span data-rename>${esc(s.name)}</span>
           <span class="x" data-remove style="margin-left:auto;opacity:.6;cursor:pointer">${S.pendingRemove === s.id ? 'Remove?' : '✕'}</span></span>
-          <span class="r2">${typeOf(s.config)} · ${esc(addrOf(s.config))}</span><span class="r2" style="margin-left:-7px">${leds(s, true)}</span></div>`,
+          <span class="r2">${s.config.kind === 'serial' ? `${typeOf(s.config)} · ${esc(s.config.port)} · <select class="baud" aria-label="Baud rate" title="Baud rate. Changes apply immediately.">${baudOptions(s.config.baud)}</select>` : `${typeOf(s.config)} · ${esc(addrOf(s.config))}`}</span><span class="r2" style="margin-left:-7px">${leds(s, true)}</span></div>`,
       )
       .join('') + '<button class="btn ghost" id="b-new4">+ New connection</button>';
 }
