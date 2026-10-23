@@ -517,7 +517,9 @@ function mountShell() {
       <button class="btn ghost sm" id="t-settings">Port settings…</button>
       <button class="btn ghost sm" id="t-rename">Rename</button>
       <button class="btn ghost sm only-multi" id="t-win"${multi}>New window</button>
-      <button class="btn ghost sm" id="t-top" title="Keep this window above all other windows">Stay on top</button>
+      <button class="btn ghost sm keep" id="t-top" title="Keep this window above all other windows">Stay on top</button>
+      <button class="btn ghost sm keep" id="t-min" title="Hide the toolbar and buttons for a minimal window"></button>
+      <button class="btn ghost sm keep" id="t-inp" title="Show or hide the line where you type commands"></button>
       <div class="seg" id="t-view" title="Raw terminal, raw and decoded side by side, or decoded only"><button data-v="raw">Raw</button><button data-v="split">Split</button><button data-v="decoded">Decoded</button><button data-v="aligned" title="Raw and decoded side by side, one row per message">Aligned</button></div>
       <button class="btn ghost sm" id="t-swap" title="Swap the raw and decoded sections">⇄ Swap</button>
       <button class="btn ghost sm" id="t-disp" title="Colours and decoding options">Display…</button>
@@ -1575,6 +1577,20 @@ function wire() {
     const m = e.target.closest('[data-m]');
     if (m) F.runMacro(m.dataset.m);
   });
+  const view = () => {
+    const key = popId ? 'pop' : 'main';
+    const min = store.get('minimal:' + key, false);
+    const noInput = store.get('noinput:' + key, false);
+    document.body.classList.toggle('minimal', min);
+    document.body.classList.toggle('hide-input', noInput);
+    $('#t-min').textContent = min ? '☰ Full view' : '▭ Minimal';
+    $('#t-inp').textContent = noInput ? 'Show input' : 'Hide input';
+    $('#t-inp').hidden = !min;
+    requestAnimationFrame(fitAll);
+  };
+  $('#t-min').onclick = () => (store.set('minimal:' + (popId ? 'pop' : 'main'), !store.get('minimal:' + (popId ? 'pop' : 'main'), false)), view());
+  $('#t-inp').onclick = () => (store.set('noinput:' + (popId ? 'pop' : 'main'), !store.get('noinput:' + (popId ? 'pop' : 'main'), false)), view());
+  view();
   $('#t-top').onclick = async () => {
     const on = $('#t-top').getAttribute('aria-pressed') !== 'true';
     try {

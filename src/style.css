@@ -238,3 +238,10 @@ body.reordering { user-select: none; cursor: grabbing; }
 .status .upd + .ver { margin-left: 12px; }
 .status .ver[data-check] { cursor: pointer; }
 .status .ver[data-check]:hover { color: var(--accent); }
+
+/* minimal window: only the terminal, plus a small strip to bring the controls back */
+body.minimal .toolbar > :not(.keep) { display: none !important; }
+body.minimal .toolbar { justify-content: flex-end; padding-top: 4px; padding-bottom: 4px; }
+body.minimal .macros, body.minimal .status, body.minimal #b-file { display: none !important; }
+body.hide-input #sendbar { display: none !important; }
+.dlg > * { flex-shrink: 0; }
