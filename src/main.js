@@ -135,7 +135,7 @@ function addSession(info) {
   s.pane.innerHTML = `<header></header><div class="split">
     <div class="col rawcol"><div class="subhdr"><b>Raw</b><button type="button" class="swapbtn" title="Swap raw and decoded" aria-label="Swap raw and decoded">⇄</button></div><div class="slot"></div></div>
     <div class="divider" role="separator" title="Drag to resize, double-click to reset"></div>
-    <div class="col deccol"><div class="subhdr"><b>Decoded</b><button type="button" class="swapbtn" title="Swap raw and decoded" aria-label="Swap raw and decoded">⇄</button><select class="decfmt" aria-label="Decode as">${FORMATS.map(([v, l]) => `<option value="${v}">${l}</option>`).join('')}</select><button type="button" class="btn ghost sm decclear">Clear</button></div><div class="dec" tabindex="0"></div></div>
+    <div class="col deccol"><div class="subhdr"><b class="dectitle">Decoded</b><button type="button" class="swapbtn" title="Swap raw and decoded" aria-label="Swap raw and decoded">⇄</button><select class="decfmt" aria-label="Decode as">${FORMATS.map(([v, l]) => `<option value="${v}">${l}</option>`).join('')}</select><button type="button" class="btn ghost sm decclear">Clear</button></div><div class="dec-head"><span>time</span><span></span><span></span><span>Raw</span><span class="decfmtname">Decoded</span></div><div class="dec" tabindex="0"></div></div>
   </div>`;
   s.slot = $('.slot', s.pane);
   s.dec = $('.dec', s.pane);
@@ -196,12 +196,18 @@ const clock = (t) => {
   return d.toTimeString().slice(0, 8) + '.' + String(d.getMilliseconds()).padStart(3, '0');
 };
 
+/** Plain-text form of received or sent bytes, control characters shown as escapes. */
+const rawText = (bytes) =>
+  new TextDecoder('utf-8').decode(bytes).replace(/[\x00-\x1f\x7f]/g, (c) =>
+    c === '\r' ? '\\r' : c === '\n' ? '\\n' : c === '\t' ? '\\t' : c === '\x1b' ? '\\e' : `\\x${c.charCodeAt(0).toString(16).padStart(2, '0')}`,
+  );
+
 function paintRecord(s, r) {
   const stick = s.dec.scrollTop + s.dec.clientHeight >= s.dec.scrollHeight - 24;
   if (!r.el) {
     r.el = document.createElement('div');
     r.el.className = `rec ${r.dir}`;
-    r.el.innerHTML = '<span class="ts"></span><span class="tag"></span><span class="len"></span><pre></pre>';
+    r.el.innerHTML = '<span class="ts"></span><span class="tag"></span><span class="len"></span><pre class="rawtxt"></pre><pre class="dectxt"></pre>';
     $('.tag', r.el).textContent = r.dir.toUpperCase();
     s.dec.append(r.el);
   }
@@ -209,7 +215,8 @@ function paintRecord(s, r) {
   ts.textContent = clock(r.t);
   ts.hidden = !D.ts;
   $('.len', r.el).textContent = `${r.bytes.length} B`;
-  $('pre', r.el).textContent = formatBytes(r.bytes, D.fmt);
+  $('.dectxt', r.el).textContent = formatBytes(r.bytes, D.fmt);
+  if (s.view === 'aligned') $('.rawtxt', r.el).textContent = rawText(r.bytes);
   if (stick) s.dec.scrollTop = s.dec.scrollHeight;
 }
 
@@ -242,7 +249,7 @@ function addRecord(s, dir, bytes) {
 function setView(s, view) {
   s.view = view;
   s.decode = view !== 'raw';
-  s.pane.classList.remove('view-raw', 'view-split', 'view-decoded');
+  s.pane.classList.remove('view-raw', 'view-split', 'view-decoded', 'view-aligned');
   s.pane.classList.add('view-' + view);
   if (s.decode) renderAllRecords(s);
   persist();
@@ -409,7 +416,7 @@ function mountShell() {
       <button class="btn ghost sm" id="t-settings">Port settings…</button>
       <button class="btn ghost sm" id="t-rename">Rename</button>
       <button class="btn ghost sm only-multi" id="t-win"${multi}>New window</button>
-      <div class="seg" id="t-view" title="Raw terminal, raw and decoded side by side, or decoded only"><button data-v="raw">Raw</button><button data-v="split">Split</button><button data-v="decoded">Decoded</button></div>
+      <div class="seg" id="t-view" title="Raw terminal, raw and decoded side by side, or decoded only"><button data-v="raw">Raw</button><button data-v="split">Split</button><button data-v="decoded">Decoded</button><button data-v="aligned" title="Raw and decoded side by side, one row per message">Aligned</button></div>
       <button class="btn ghost sm" id="t-swap" title="Swap the raw and decoded sections">⇄ Swap</button>
       <button class="btn ghost sm" id="t-disp" title="Colours and decoding options">Display…</button>
       <button class="btn ghost sm" id="t-clear">Clear</button>

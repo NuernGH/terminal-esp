@@ -179,3 +179,13 @@ body.reordering { user-select: none; cursor: grabbing; }
 .rec.tx { color: var(--tx, var(--cyan)); background: color-mix(in srgb, var(--tx, var(--cyan)) 8%, transparent); }
 .frm input[type='color'] { padding: 2px; height: 32px; width: 56px; cursor: pointer; }
 .row .btn { align-self: center; }
+
+/* aligned view: one row per message, raw and decoded in table columns */
+.dec-head, .rec .rawtxt { display: none; }
+.view-aligned .rawcol { display: none; }
+.view-aligned .deccol { display: flex; flex: 1; }
+.view-aligned .dec-head { display: grid; grid-template-columns: 12ch 3ch 7ch 1fr 1fr; column-gap: 8px; padding: 3px 8px; font: 11px var(--mono); color: var(--mute); background: var(--panel2); border-bottom: 1px solid var(--line); text-transform: uppercase; letter-spacing: .06em; }
+.view-aligned .rec { grid-template-columns: 12ch 3ch 7ch 1fr 1fr; }
+.view-aligned .rec .rawtxt { display: block; }
+.view-aligned .dec-head .decfmtname { grid-column: 5; }
+.rec .rawtxt, .rec .dectxt { margin: 0; white-space: pre-wrap; word-break: break-all; font: inherit; min-width: 0; }
