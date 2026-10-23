@@ -189,3 +189,10 @@ body.reordering { user-select: none; cursor: grabbing; }
 .view-aligned .rec .rawtxt { display: block; }
 .view-aligned .dec-head .decfmtname { grid-column: 5; }
 .rec .rawtxt, .rec .dectxt { margin: 0; white-space: pre-wrap; word-break: break-all; font: inherit; min-width: 0; }
+.layout-grid .panes.drop-end { outline: 2px dashed var(--accent); outline-offset: -3px; }
+.gh { display: none; position: absolute; z-index: 5; touch-action: none; }
+.layout-grid .gh { display: block; }
+.gh-r { top: 0; right: -3px; width: 7px; height: 100%; cursor: col-resize; }
+.gh-b { left: 0; bottom: -3px; height: 7px; width: 100%; cursor: row-resize; }
+.gh:hover { background: var(--accent); opacity: .6; }
+.layout-grid .pane { position: relative; }

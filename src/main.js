@@ -144,6 +144,7 @@ function addSession(info) {
   s.pane.classList.toggle('swap', D.swap);
   s.pane.style.setProperty('--decw', D.ratio * 100 + '%');
   s.pane.classList.toggle('split-v', D.split === 'v');
+  s.pane.insertAdjacentHTML('beforeend', '<i class="gh gh-r" title="Drag to resize, double-click to reset"></i><i class="gh gh-b" title="Drag to resize, double-click to reset"></i>');
   $('#panes').append(s.pane);
   s.term.open(s.slot);
   new ResizeObserver(() => fitOne(s)).observe(s.slot);
@@ -516,6 +517,7 @@ function renderAll() {
   $('#sendbar').hidden = none;
   const cols = store.get('cols', 'auto');
   $('#panes').style.gridTemplateColumns = S.layout === 'grid' && cols !== 'auto' ? `repeat(${cols}, minmax(0, 1fr))` : '';
+  applyGridSizes();
   updateTitle();
   requestAnimationFrame(fitAll);
 }
@@ -919,13 +921,83 @@ function moveSession(dragId, targetId, before) {
   renderAll();
 }
 
+/** Manual grid sizes: fr weights for columns and rows, dropped when the pane count or column setting changes. */
+let G = store.get('gridsize', null);
+function applyGridSizes() {
+  const panes = $('#panes');
+  if (G && (G.n !== S.sessions.size || G.cols !== store.get('cols', 'auto'))) G = null;
+  if (S.layout !== 'grid' || !G) {
+    if (S.layout === 'grid') panes.style.gridTemplateRows = '';
+    return;
+  }
+  if (G.c) panes.style.gridTemplateColumns = G.c.map((f) => `minmax(0, ${f}fr)`).join(' ');
+  if (G.r) panes.style.gridTemplateRows = G.r.map((f) => `minmax(140px, ${f}fr)`).join(' ');
+}
+
+function wireGridResize() {
+  let d = null;
+  const tracks = (css) => css.split(' ').map(parseFloat).filter((n) => !isNaN(n));
+  const index = (sizes, start) => {
+    let acc = 0;
+    for (let i = 0; i < sizes.length; i++) {
+      if (Math.abs(acc - start) < 3) return i;
+      acc += sizes[i];
+    }
+    return -1;
+  };
+  document.addEventListener('pointerdown', (e) => {
+    const h = e.target.closest?.('.gh');
+    if (!h || S.layout !== 'grid') return;
+    e.preventDefault();
+    e.stopPropagation();
+    const panes = $('#panes');
+    const cs = getComputedStyle(panes);
+    const pane = h.closest('.pane');
+    const col = h.classList.contains('gh-r');
+    const sizes = tracks(col ? cs.gridTemplateColumns : cs.gridTemplateRows);
+    const i = index(sizes, col ? pane.offsetLeft : pane.offsetTop);
+    if (i < 0 || i + 1 >= sizes.length) return;
+    d = { col, i, sizes, start: col ? e.clientX : e.clientY, other: tracks(col ? cs.gridTemplateRows : cs.gridTemplateColumns) };
+    document.body.classList.add('reordering');
+  });
+  document.addEventListener('pointermove', (e) => {
+    if (!d) return;
+    const delta = (d.col ? e.clientX : e.clientY) - d.start;
+    const min = d.col ? 220 : 140;
+    const pair = d.sizes[d.i] + d.sizes[d.i + 1];
+    const a = Math.min(pair - min, Math.max(min, d.sizes[d.i] + delta));
+    const sizes = d.sizes.slice();
+    sizes[d.i] = a;
+    sizes[d.i + 1] = pair - a;
+    G = { ...(G ?? {}), n: S.sessions.size, cols: store.get('cols', 'auto') };
+    // Keep the other axis as it currently is so it does not jump when explicit sizes take over.
+    G[d.col ? 'c' : 'r'] = sizes;
+    G[d.col ? 'r' : 'c'] ??= d.other;
+    applyGridSizes();
+  });
+  document.addEventListener('pointerup', () => {
+    if (!d) return;
+    d = null;
+    document.body.classList.remove('reordering');
+    store.set('gridsize', G);
+    requestAnimationFrame(fitAll);
+  });
+  document.addEventListener('dblclick', (e) => {
+    if (!e.target.closest?.('.gh')) return;
+    G = null;
+    store.set('gridsize', null);
+    $('#panes').style.gridTemplateRows = '';
+    renderAll();
+  });
+}
+
 function wireDragAndDrop() {
   // Pointer events instead of HTML5 drag and drop: the webview on Windows can swallow
   // native drag events, pointer events always work.
   let st = null;
   let justDragged = false;
   const clear = () =>
-    $$('.drop-before, .drop-after, .dragging').forEach((el) => el.classList.remove('drop-before', 'drop-after', 'dragging'));
+    $$('.drop-before, .drop-after, .dragging, .drop-end').forEach((el) => el.classList.remove('drop-before', 'drop-after', 'dragging', 'drop-end'));
   const before = (e, t) => {
     const r = t.getBoundingClientRect();
     return t.classList.contains('card') ? e.clientY < r.top + r.height / 2 : e.clientX < r.left + r.width / 2;
@@ -933,7 +1005,7 @@ function wireDragAndDrop() {
   document.addEventListener('pointerdown', (e) => {
     if (e.button !== 0) return;
     const src = e.target.closest?.('.tab[data-id], .card[data-id], .pane > header');
-    if (!src || e.target.closest('select, input, button, .st, [data-remove], .ren')) return;
+    if (!src || e.target.closest('select, input, button, .st, [data-remove], .ren, .gh')) return;
     st = { id: idOf(src), src, x0: e.clientX, y0: e.clientY, active: false, target: null, before: true };
   });
   document.addEventListener('pointermove', (e) => {
@@ -944,12 +1016,18 @@ function wireDragAndDrop() {
       document.body.classList.add('reordering');
       (st.src.closest('.pane') ?? st.src).classList.add('dragging');
     }
-    $$('.drop-before, .drop-after').forEach((el) => el.classList.remove('drop-before', 'drop-after'));
+    $$('.drop-before, .drop-after, .drop-end').forEach((el) => el.classList.remove('drop-before', 'drop-after', 'drop-end'));
     const t = document.elementFromPoint(e.clientX, e.clientY)?.closest('.pane[data-id], .tab[data-id], .card[data-id]');
     if (t && t.dataset.id !== st.id) {
       st.target = t.dataset.id;
       st.before = before(e, t);
       t.classList.add(st.before ? 'drop-before' : 'drop-after');
+    } else if (!t && S.layout === 'grid' && document.elementFromPoint(e.clientX, e.clientY)?.id === 'panes') {
+      // Empty space in the grid: drop at the end.
+      const ids = [...S.sessions.keys()].filter((i) => i !== st.id);
+      st.target = ids[ids.length - 1] ?? null;
+      st.before = false;
+      $('#panes').classList.add('drop-end');
     } else st.target = null;
   });
   const end = (apply) => {
@@ -1142,6 +1220,7 @@ function wire() {
   $('#t-swap').onclick = swap;
   document.addEventListener('click', (e) => e.target.closest?.('.swapbtn') && swap());
   wireDivider();
+  wireGridResize();
   $('#t-disp').onclick = openDisplayDialog;
   document.addEventListener('change', (e) => {
     const sel = e.target.closest?.('select.decfmt');
