@@ -97,17 +97,56 @@ const PALETTE = {
     brightBlack: '#5b6a7e', brightRed: '#ff8a9b', brightGreen: '#6df0a4', brightYellow: '#ffd27a', brightBlue: '#7dbcff', brightMagenta: '#e3aaf7', brightCyan: '#85e2f2', brightWhite: '#ffffff' },
 };
 const scheme = window.matchMedia('(prefers-color-scheme: dark)');
+
+// Colour themes. Each one sets the interface variables; `dark` picks the terminal's ANSI palette.
+const th = (dark, bg, panel, panel2, line, fg, mute, accent, term, termfg, ok, warn, err, cyan) => ({ dark, vars: { '--bg': bg, '--panel': panel, '--panel2': panel2, '--line': line, '--fg': fg, '--mute': mute, '--accent': accent, '--term': term, '--termfg': termfg, '--ok': ok, '--warn': warn, '--err': err, '--cyan': cyan } });
+const THEMES = {
+  system: { label: 'System' },
+  light: { label: 'Light', ...th(false, '#eef0f3', '#ffffff', '#f4f6f8', '#d9dee5', '#1b2430', '#667487', '#0a7cff', '#fbfcfd', '#1b2430', '#14934a', '#b7791f', '#d6334a', '#0b8aa6') },
+  dark: { label: 'Dark', ...th(true, '#0c1016', '#141a22', '#10151c', '#232c38', '#e6ebf2', '#8593a6', '#4da3ff', '#0a0e13', '#d5dde8', '#3ddc84', '#f0b64a', '#ff6b81', '#4fd1e8') },
+  midnight: { label: 'Midnight blue', ...th(true, '#070b1a', '#0d1329', '#0a1022', '#1c2547', '#dfe6ff', '#7b88b8', '#6c8cff', '#050816', '#cfd8ff', '#4ee3a0', '#f5c45e', '#ff6e8a', '#5cd6ff') },
+  nord: { label: 'Nord', ...th(true, '#272c36', '#2e3440', '#2a303b', '#434c5e', '#eceff4', '#9aa5b8', '#88c0d0', '#2b303b', '#d8dee9', '#a3be8c', '#ebcb8b', '#bf616a', '#8fbcbb') },
+  dracula: { label: 'Dracula', ...th(true, '#1e1f29', '#282a36', '#232530', '#44475a', '#f8f8f2', '#8d90a8', '#bd93f9', '#1e1f29', '#f8f8f2', '#50fa7b', '#f1fa8c', '#ff5555', '#8be9fd') },
+  solardark: { label: 'Solarized dark', ...th(true, '#00212b', '#002b36', '#00252f', '#0b4452', '#eee8d5', '#7f9a9f', '#2aa198', '#002b36', '#93a1a1', '#859900', '#b58900', '#dc322f', '#2aa198') },
+  solarlight: { label: 'Solarized light', ...th(false, '#f3ecd7', '#fdf6e3', '#f7f0dc', '#e1d9c0', '#3f4f55', '#7c8d8f', '#268bd2', '#fdf6e3', '#586e75', '#859900', '#b58900', '#dc322f', '#2aa198') },
+  matrix: { label: 'Green screen', ...th(true, '#020a04', '#06130a', '#040e07', '#123320', '#c7f5d3', '#5f9a73', '#33ff77', '#000000', '#33ff77', '#33ff77', '#d9f24a', '#ff5c5c', '#4dffd2') },
+  amber: { label: 'Amber retro', ...th(true, '#0d0800', '#170e00', '#120a00', '#3a2600', '#ffd9a0', '#a37a3b', '#ffb000', '#080500', '#ffb000', '#ffd24a', '#ff9a3c', '#ff5c4a', '#ffcf70') },
+  contrast: { label: 'High contrast', ...th(true, '#000000', '#000000', '#0a0a0a', '#6a6a6a', '#ffffff', '#d0d0d0', '#ffeb3b', '#000000', '#ffffff', '#00ff66', '#ffd400', '#ff5050', '#00e5ff') },
+};
+const themeId = () => (THEMES[store.get('theme', 'system')] ? store.get('theme', 'system') : 'system');
+const isDark = () => (themeId() === 'system' ? scheme.matches : THEMES[themeId()].dark);
+
+function applyThemeVars() {
+  const root = document.documentElement;
+  const t = THEMES[themeId()];
+  for (const k of Object.keys(THEMES.dark.vars)) {
+    if (t.vars) root.style.setProperty(k, t.vars[k]);
+    else root.style.removeProperty(k);
+  }
+  root.style.colorScheme = themeId() === 'system' ? '' : t.dark ? 'dark' : 'light';
+}
+
 function termTheme() {
   const css = getComputedStyle(document.documentElement);
+  const accent = css.getPropertyValue('--accent').trim();
   return {
-    ...PALETTE[scheme.matches ? 'dark' : 'light'],
+    ...PALETTE[isDark() ? 'dark' : 'light'],
     background: css.getPropertyValue('--term').trim(),
     foreground: rxColour(),
-    cursor: css.getPropertyValue('--accent').trim(),
-    selectionBackground: scheme.matches ? '#2b4a73' : '#b3d4ff',
+    cursor: accent,
+    selectionBackground: /^#[0-9a-f]{6}$/i.test(accent) ? accent + '55' : isDark() ? '#2b4a73' : '#b3d4ff',
   };
 }
-scheme.addEventListener('change', () => S.sessions.forEach((s) => (s.term.options.theme = termTheme())));
+
+function applyTheme() {
+  applyThemeVars();
+  S.sessions.forEach((s) => (s.term.options.theme = termTheme()));
+  const sel = $('#t-theme');
+  if (sel) sel.value = themeId();
+  if ($('#panes')) requestAnimationFrame(() => S.sessions.forEach((s) => s.plot && F.drawPlot(s)));
+}
+scheme.addEventListener('change', applyTheme);
+window.addEventListener('storage', (e) => e.key === 'esp-terminal.theme' && applyTheme());
 
 // ------------------------------------------------------------------ sessions
 function addSession(info) {
@@ -533,6 +572,7 @@ function mountShell() {
       <button class="btn ghost sm" id="t-plot" title="Plot numbers found in the incoming text">Plot</button>
       <button class="btn ghost sm" id="t-log" title="Save everything to a log file"></button>
       <button class="btn ghost sm" id="t-clear">Clear</button>
+      <select class="theme" id="t-theme" title="Colour theme" aria-label="Colour theme">${Object.entries(THEMES).map(([id, t]) => `<option value="${id}">${t.label}</option>`).join('')}</select>
       <button class="btn sm" id="t-flash">Flash .bin…</button>
     </div>
     <div class="main">
@@ -1572,6 +1612,8 @@ function wire() {
   wireGridResize();
   F.init({ S, get, cur, call, note, esc, $, $$, store, EOL, sendText, sendBytes, renderToolbar, fitAll });
   F.renderMacros();
+  $('#t-theme').onchange = (e) => (store.set('theme', e.target.value), applyTheme());
+  applyTheme();
   $('#status').addEventListener('click', (e) => {
     if (e.target.closest('[data-update]') && UPDATE) {
       e.preventDefault();

@@ -27,6 +27,7 @@ backend) and xterm.js.
   A serial upload releases the COM port and reconnects the session afterwards.
 - Traffic colours: incoming text uses the RX colour, commands you send show on their own line in the TX colour (optional → marker). Both colours are yours to change under **Display…**.
 - **View: Raw / Split / Decoded** (per session, toolbar): raw terminal, raw and decoded together (side by side or stacked, draggable divider, ⇄ swaps which comes first), or decoded only. The decoded part lists every received (RX) and sent (TX) chunk with a timestamp, as Hex, ASCII (escaped), Decimal, Binary or Hex + ASCII dump.
+- **Themes** (drop-down in the toolbar): System (follows Windows), Light, Dark, Midnight blue, Nord, Dracula, Solarized dark and light, Green screen, Amber retro and High contrast. The terminal colours follow the theme. The choice is remembered and shared with pop-out windows.
 - Typing in the terminal sends keystrokes (Enter uses the session's line ending); there is also a
   send box with history (Up/Down).
 
@@ -66,4 +67,4 @@ Every push to `main` publishes a GitHub Release (`v0.1.<run number>`) with the i
 
 ## Tray
 
-Closing the main window hides it to the system tray and keeps all connections running. Click the tray icon to bring it back. Right-click for a menu with "Open session in new window" for each session, and Quit. Every window has a "Stay on top" button.
+Closing the main window hides it to the system tray and keeps all connections running. Click the tray icon to bring it back. Right-click for a menu with "Open session in new window" for each session, and Quit. Every window has a "Stay on top" button. Pop-out windows also have a Minimal button that hides the toolbar and input line (and the Send file button) for a compact view.

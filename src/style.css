@@ -245,3 +245,4 @@ body.minimal .toolbar { justify-content: flex-end; padding-top: 4px; padding-bot
 body.minimal .macros, body.minimal .status, body.minimal #b-file { display: none !important; }
 body.hide-input #sendbar { display: none !important; }
 .dlg > * { flex-shrink: 0; }
+select.theme { font: 12px var(--ui); padding: 4px 6px; background: var(--panel); color: var(--fg); border: 1px solid var(--line); border-radius: 6px; }
