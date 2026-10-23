@@ -38,7 +38,7 @@ fn list_serial_ports() -> Vec<PortInfo> {
 
 #[tauri::command]
 fn session_create(eng: State<Core>, id: String, name: String, config: Config, auto_reconnect: Option<bool>) {
-    eng.0.create(&id, &name, config, auto_reconnect.unwrap_or(false));
+    eng.0.create(&id, &name, config, auto_reconnect.unwrap_or(true));
 }
 
 #[tauri::command]

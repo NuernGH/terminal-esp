@@ -739,7 +739,7 @@ async function openDialog(editId) {
       editing.config = config;
       editing.lineEnd = lineEnd;
       editing.autoReconnect = autoReconnect;
-      await call('session_create', { id: editing.id, name, config, auto_reconnect: autoReconnect });
+      await call('session_create', { id: editing.id, name, config, autoReconnect });
       persist();
       renderAll();
       if (wasOn) {
@@ -748,7 +748,7 @@ async function openDialog(editId) {
       }
     } else {
       const id = 's' + Date.now().toString(36);
-      await call('session_create', { id, name, config, auto_reconnect: autoReconnect });
+      await call('session_create', { id, name, config, autoReconnect });
       addSession({ id, name, config, lineEnd, autoReconnect });
       persist();
       renderAll();
@@ -1356,7 +1356,7 @@ async function start() {
   }
   for (const info of list) {
     const auto = info.autoReconnect ?? info.auto_reconnect ?? true;
-    await call('session_create', { id: info.id, name: info.name, config: info.config, auto_reconnect: auto });
+    await call('session_create', { id: info.id, name: info.name, config: info.config, autoReconnect: auto });
     const live = (await call('session_list')).find((x) => x.id === info.id);
     const s = addSession({ ...info, ...(live ? { state: live.state, rx: live.rx, tx: live.tx } : {}) });
     await replayBacklog(s);

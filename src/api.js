@@ -42,7 +42,7 @@ function mockCall(cmd, a) {
         { name: 'COM3', description: 'wch.cn USB-SERIAL CH340' },
       ]);
     case 'session_create':
-      sim.sessions.set(a.id, { id: a.id, name: a.name, config: a.config, auto_reconnect: !!a.auto_reconnect, state: 'off', rx: 0, tx: 0 });
+      sim.sessions.set(a.id, { id: a.id, name: a.name, config: a.config, auto_reconnect: !!a.autoReconnect, state: 'off', rx: 0, tx: 0 });
       return Promise.resolve();
     case 'session_set_baud': {
       const s = sim.sessions.get(a.id);
