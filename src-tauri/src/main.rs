@@ -201,7 +201,7 @@ struct TraySession {
 struct TrayNames(Mutex<Vec<TraySession>>);
 
 fn tray_menu(app: &AppHandle, sessions: &[TraySession]) -> tauri::Result<Menu<tauri::Wry>> {
-    let show = MenuItem::with_id(app, "show", "Show ESP Terminal", true, None::<&str>)?;
+    let show = MenuItem::with_id(app, "show", "Show NuTerm", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
     let sep = PredefinedMenuItem::separator(app)?;
     if sessions.is_empty() {
@@ -369,7 +369,7 @@ fn main() {
             app.manage(FlashJob(Mutex::new(None)));
             app.manage(TrayNames(Mutex::new(Vec::new())));
             let menu = tray_menu(app.handle(), &[])?;
-            let mut tray = TrayIconBuilder::with_id("main").tooltip("ESP Terminal").menu(&menu).show_menu_on_left_click(false);
+            let mut tray = TrayIconBuilder::with_id("main").tooltip("NuTerm").menu(&menu).show_menu_on_left_click(false);
             if let Some(icon) = app.default_window_icon() {
                 tray = tray.icon(icon.clone());
             }
@@ -381,7 +381,7 @@ fn main() {
                     app.exit(0);
                 } else if let Some(sid) = id.strip_prefix("open:") {
                     let name = app.state::<TrayNames>().0.lock().unwrap().iter().find(|s| s.id == sid).map(|s| s.name.clone()).unwrap_or_default();
-                    let _ = open_pop(app, sid, &format!("{name} — ESP Terminal"));
+                    let _ = open_pop(app, sid, &format!("{name} — NuTerm"));
                 }
             })
             .on_tray_icon_event(|tray, event| {
@@ -422,5 +422,5 @@ fn main() {
             flash_cancel,
         ])
         .run(tauri::generate_context!())
-        .expect("error while running ESP Terminal");
+        .expect("error while running NuTerm");
 }

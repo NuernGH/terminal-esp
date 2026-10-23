@@ -1,4 +1,4 @@
-//! Connection engine for the ESP terminal: sessions over serial, TCP/Telnet and
+//! Connection engine for NuTerm: sessions over serial, TCP/Telnet and
 //! UDP, with RX/TX counters, a scrollback backlog and network discovery.
 //! It has no GUI dependency; the Tauri shell feeds it an event callback.
 

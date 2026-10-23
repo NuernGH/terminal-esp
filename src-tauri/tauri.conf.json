@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "ESP Terminal",
+  "productName": "NuTerm",
   "version": "0.1.0",
   "identifier": "dev.espterminal.app",
   "build": {
@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "ESP Terminal",
+        "title": "NuTerm",
         "width": 1180,
         "height": 760,
         "minWidth": 720,

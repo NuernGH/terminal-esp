@@ -320,7 +320,7 @@ pub fn flash_ota(job: &Ota, on_event: &mut dyn FnMut(FlashEvent), cancel: &Atomi
             Ok((s, _)) => break s,
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                 if start.elapsed() > Duration::from_secs(15) {
-                    return Err("The board did not connect back. A firewall may be blocking incoming connections: allow ESP Terminal on private networks.".into());
+                    return Err("The board did not connect back. A firewall may be blocking incoming connections: allow NuTerm on private networks.".into());
                 }
                 thread::sleep(Duration::from_millis(50));
             }

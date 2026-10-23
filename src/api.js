@@ -160,7 +160,7 @@ function mockCall(cmd, a) {
         ),
       );
     case 'esptool_path':
-      return Promise.resolve('C:\\Program Files\\ESP Terminal\\esptool\\esptool.exe');
+      return Promise.resolve('C:\\Program Files\\NuTerm\\esptool\\esptool.exe');
     case 'flash_start': {
       const fe = (ev) => flashListeners.forEach((cb) => cb(ev));
       sim.flashTimer && clearInterval(sim.flashTimer);

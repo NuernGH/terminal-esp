@@ -709,7 +709,7 @@ function renderStatus() {
 
 function updateTitle() {
   const s = cur();
-  document.title = s ? `${s.name} — ESP Terminal` : 'ESP Terminal';
+  document.title = s ? `${s.name} — NuTerm` : 'NuTerm';
   if (inTauri) import('@tauri-apps/api/window').then((m) => m.getCurrentWindow().setTitle(document.title)).catch(() => {});
 }
 
@@ -1130,7 +1130,7 @@ async function openFlashDialog() {
       <label>OTA port<input id="f-oport" list="f-oports" value="${last.oport || 3232}" inputmode="numeric"><datalist id="f-oports"><option value="3232">ESP32</option><option value="8266">ESP8266</option></datalist></label>
       <label>OTA password (if set)<input id="f-pass" type="password" autocomplete="off"></label>
       <label>Target<select id="f-target"><option value="fw">Firmware</option><option value="fs">Filesystem image</option></select></label>
-      <p class="hint full">The sketch must include ArduinoOTA. Allow ESP Terminal through the Windows firewall on private networks, because the board connects back to this PC to fetch the file.</p>
+      <p class="hint full">The sketch must include ArduinoOTA. Allow NuTerm through the Windows firewall on private networks, because the board connects back to this PC to fetch the file.</p>
     </div>
     <div id="f-run" hidden><div class="prog"><i id="f-bar"></i></div><p class="hint" id="f-msg"></p><pre class="log" id="f-log"></pre></div>
     <p class="err-text" id="f-err" hidden></p>
@@ -1689,7 +1689,7 @@ function wire() {
   };
   $('#t-win').onclick = () => {
     const s = cur();
-    if (s) call('open_window', { sessionId: s.id, title: `${s.name} — ESP Terminal` }).catch((e) => note(String(e), true));
+    if (s) call('open_window', { sessionId: s.id, title: `${s.name} — NuTerm` }).catch((e) => note(String(e), true));
   };
   const input = $('#send-in');
   $('#sendbar').onsubmit = async (e) => {

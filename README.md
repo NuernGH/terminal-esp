@@ -1,4 +1,4 @@
-# ESP Terminal
+# NuTerm
 
 A Windows terminal for ESP boards, in the spirit of Tera Term and CoolTerm: open several
 named sessions over **serial (COM)**, **TCP/Telnet** (WiFi serial bridges), **UDP**, **WebSocket**, **SSH**, **MQTT**, **Bluetooth LE** or **USB HID**, watch RX/TX
@@ -61,7 +61,7 @@ Pushing to GitHub also builds the installer and portable zip in Actions (`.githu
 
 ## Portable version
 
-Every build also makes `ESP-Terminal-<version>-portable.zip` (Actions artifact `esp-terminal-windows-portable`): unzip anywhere and run `ESP Terminal.exe`, no installation. esptool and avrdude are included.
+Every build also makes `NuTerm-<version>-portable.zip` (Actions artifact `esp-terminal-windows-portable`): unzip anywhere and run `NuTerm.exe`, no installation. esptool and avrdude are included.
 
 ## Updates
 
