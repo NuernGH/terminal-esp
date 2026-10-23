@@ -56,9 +56,10 @@ const idOf = (el) => el.closest('[data-id]')?.dataset.id;
 const stateClass = (s) => (s.state === 'on' ? 'on' : s.state === 'connecting' ? 'connecting' : '');
 const stateTip = (s) =>
   s.state === 'off' ? 'Disconnected. Click to connect' : s.state === 'connecting' ? 'Connecting. Click to cancel' : 'Connected. Click to disconnect';
+const hex4 = (n) => Number(n).toString(16).toUpperCase().padStart(4, '0');
 const addrOf = (c) =>
-  c.kind === 'serial' ? `${c.port} · ${c.baud}` : c.kind === 'tcp' ? `${c.host}:${c.port}` : c.kind === 'ws' ? c.url : c.kind === 'ssh' ? `${c.user}@${c.host}:${c.port}` : c.kind === 'mqtt' ? `mqtt://${c.host}:${c.port}` : `udp://${c.host}:${c.port}`;
-const typeOf = (c) => (c.kind === 'serial' ? 'Serial' : c.kind === 'ws' ? 'WebSocket' : c.kind === 'ssh' ? 'SSH' : c.kind === 'mqtt' ? 'MQTT' : c.kind === 'tcp' ? (c.protocol === 'telnet' ? 'Telnet' : 'TCP') : 'UDP');
+  c.kind === 'serial' ? `${c.port} · ${c.baud}` : c.kind === 'tcp' ? `${c.host}:${c.port}` : c.kind === 'ws' ? c.url : c.kind === 'ssh' ? `${c.user}@${c.host}:${c.port}` : c.kind === 'mqtt' ? `mqtt://${c.host}:${c.port}` : c.kind === 'ble' ? c.name || c.id : c.kind === 'hid' ? `HID ${hex4(c.vendor_id)}:${hex4(c.product_id)}` : `udp://${c.host}:${c.port}`;
+const typeOf = (c) => (c.kind === 'serial' ? 'Serial' : c.kind === 'ws' ? 'WebSocket' : c.kind === 'ssh' ? 'SSH' : c.kind === 'mqtt' ? 'MQTT' : c.kind === 'ble' ? 'Bluetooth LE' : c.kind === 'hid' ? 'USB HID' : c.kind === 'tcp' ? (c.protocol === 'telnet' ? 'Telnet' : 'TCP') : 'UDP');
 
 const leds = (s, full) =>
   `<span class="io"><i class="led rx" data-led="rx" data-sid="${s.id}"></i>RX${full ? ` <b data-cnt="rx" data-sid="${s.id}"></b>` : ''}<i class="led tx" data-led="tx" data-sid="${s.id}"></i>TX${full ? ` <b data-cnt="tx" data-sid="${s.id}"></b>` : ''}</span>`;
@@ -703,6 +704,8 @@ const baudOptions = (cur) =>
 const HINTS = {
   serial: 'A board plugged in by USB. Type a port name such as COM5 if it is not listed.',
   tcp: 'Telnet or raw TCP to a WiFi serial bridge (ESP-Link, ESP3D, ser2net or your own sketch).',
+  ble: 'A Bluetooth LE board that exposes a serial (UART over GATT) service. Classic Bluetooth serial adapters appear as a COM port after pairing in Windows; use Serial for those. Not yet tested on real hardware.',
+  hid: 'A USB device that is not a serial port (custom controller, instrument). Received reports show as bytes; what you send goes out as zero padded output reports. Not yet tested on real hardware.',
   ssh: 'A secure shell on a Linux machine, Raspberry Pi, router or server. New host keys are saved on first use and checked afterwards.',
   mqtt: 'Connects to a broker. Received messages appear as [topic] payload lines; lines you send are published.',
   udp: 'Connectionless datagrams. Use the same local port in the board firmware.',
@@ -727,6 +730,8 @@ async function openDialog(editId) {
       <button type="button" data-t="ws">WebSocket<small>ws:// or wss://</small></button>
       <button type="button" data-t="ssh">SSH<small>Linux, Pi, routers</small></button>
       <button type="button" data-t="mqtt">MQTT<small>Topics and messages</small></button>
+      <button type="button" data-t="ble">Bluetooth LE<small>UART service · untested</small></button>
+      <button type="button" data-t="hid">USB HID<small>Raw reports · untested</small></button>
     </div>
     <div class="frm" data-for="serial">
       <label class="full">Port<input id="d-port" list="d-ports" value="${esc(c.kind === 'serial' ? c.port : ports[0]?.name ?? '')}" autocomplete="off"><datalist id="d-ports">${ports.map((p) => `<option value="${esc(p.name)}">${esc(p.description)}</option>`).join('')}</datalist></label>
@@ -768,6 +773,20 @@ async function openDialog(editId) {
       <label class="full">Publish topic (empty: type <code>topic message</code> to publish)<input id="d-mpub" value="${esc(c.kind === 'mqtt' ? c.publish_topic : '')}" autocomplete="off" spellcheck="false"></label>
       <label class="chk full"><input type="checkbox" id="d-mtls"${c.kind === 'mqtt' && c.tls ? ' checked' : ''}> Use TLS (usually port 8883)</label>
     </div>
+    <div class="frm" data-for="ble">
+      <div class="scanbox full" style="display:block"><div class="top"><button type="button" class="btn ghost sm" id="d-bscan">Scan for devices</button><span id="d-bmsg">Looks for Bluetooth LE devices for a few seconds.</span></div><div class="found" id="d-bfound"></div></div>
+      <label class="full">Device (name or id from the scan)<input id="d-bid" value="${esc(c.kind === 'ble' ? c.id : '')}" autocomplete="off" spellcheck="false"></label>
+      <label class="full">Serial service<select id="d-bpre"><option value="nordic">Nordic UART (most ESP32 and nRF boards)</option><option value="hm10">HM-10 style (FFE1 for both directions)</option><option value="custom">Custom UUIDs</option></select></label>
+      <label class="full" data-bcustom>Receive characteristic (notify)<input id="d-bnotify" value="${esc(c.kind === 'ble' ? c.notify_char : '6E400003-B5A3-F393-E0A9-E50E24DCCA9E')}" autocomplete="off" spellcheck="false"></label>
+      <label class="full" data-bcustom>Send characteristic (write)<input id="d-bwrite" value="${esc(c.kind === 'ble' ? c.write_char : '6E400002-B5A3-F393-E0A9-E50E24DCCA9E')}" autocomplete="off" spellcheck="false"></label>
+    </div>
+    <div class="frm" data-for="hid">
+      <div class="scanbox full" style="display:block"><div class="top"><button type="button" class="btn ghost sm" id="d-hscan">List HID devices</button><span id="d-hmsg">Shows the USB HID devices Windows has attached.</span></div><div class="found" id="d-hfound"></div></div>
+      <label>Vendor id (hex)<input id="d-hvid" value="${c.kind === 'hid' ? hex4(c.vendor_id) : ''}" placeholder="1209" autocomplete="off" spellcheck="false"></label>
+      <label>Product id (hex)<input id="d-hpid" value="${c.kind === 'hid' ? hex4(c.product_id) : ''}" placeholder="C55D" autocomplete="off" spellcheck="false"></label>
+      <label>Output report size (bytes)<input id="d-hsize" value="${c.kind === 'hid' ? c.report_size : 64}" inputmode="numeric"></label>
+      <input type="hidden" id="d-hpath" value="${esc(c.kind === 'hid' ? c.path : '')}">
+    </div>
     <div class="scanbox" id="d-scanbox">
       <div class="top"><button type="button" class="btn ghost sm" id="d-scan">Scan network</button>
         <label style="display:flex;gap:5px;align-items:center;font-size:11.5px;color:var(--mute)">Ports <input id="d-sports" value="23, 8266"></label>
@@ -796,6 +815,48 @@ async function openDialog(editId) {
   q('#d-cancel').onclick = close;
   ov.addEventListener('mousedown', (e) => e.target === ov && close());
   ov.addEventListener('keydown', (e) => e.key === 'Escape' && close());
+  const syncPre = () => $$('[data-bcustom]', ov).forEach((l) => (l.hidden = q('#d-bpre').value !== 'custom'));
+  q('#d-bpre').onchange = syncPre;
+  if (c.kind === 'ble') {
+    const nordic = c.notify_char?.toUpperCase().startsWith('6E400003') && c.write_char?.toUpperCase().startsWith('6E400002');
+    q('#d-bpre').value = nordic ? 'nordic' : c.notify_char?.toUpperCase() === 'FFE1' && c.write_char?.toUpperCase() === 'FFE1' ? 'hm10' : 'custom';
+  }
+  syncPre();
+  const listFound = (box, items, label, pick) => {
+    box.innerHTML = items.map((x, i) => `<button type="button" data-f="${i}"><span>${esc(label(x)[0])}<br><small>${esc(label(x)[1])}</small></span></button>`).join('');
+    $$('button', box).forEach((b) => (b.onclick = () => pick(items[+b.dataset.f])));
+  };
+  q('#d-bscan').onclick = async () => {
+    const btn = q('#d-bscan');
+    btn.disabled = true;
+    q('#d-bmsg').textContent = 'Scanning…';
+    try {
+      const found = await call('ble_scan');
+      q('#d-bmsg').textContent = found.length ? `${found.length} found. Click one.` : 'Nothing found. Is the device on, advertising and not connected elsewhere?';
+      listFound(q('#d-bfound'), found, (d) => [d.name || '(no name)', `${d.id}${d.rssi != null ? ` · ${d.rssi} dBm` : ''}`], (d) => {
+        q('#d-bid').value = d.id;
+        q('#d-bid').dataset.name = d.name;
+        if (d.name) q('#d-name').value = d.name;
+      });
+    } catch (e) {
+      q('#d-bmsg').textContent = `Scan failed: ${e}`;
+    }
+    btn.disabled = false;
+  };
+  q('#d-hscan').onclick = async () => {
+    try {
+      const found = await call('hid_list');
+      q('#d-hmsg').textContent = found.length ? `${found.length} found. Click one.` : 'No HID devices found.';
+      listFound(q('#d-hfound'), found, (d) => [d.name || '(unnamed)', `${hex4(d.vendor_id)}:${hex4(d.product_id)} · usage ${hex4(d.usage_page)}/${d.usage}`], (d) => {
+        q('#d-hvid').value = hex4(d.vendor_id);
+        q('#d-hpid').value = hex4(d.product_id);
+        q('#d-hpath').value = d.path;
+        if (d.name) q('#d-name').value = d.name;
+      });
+    } catch (e) {
+      q('#d-hmsg').textContent = `Listing failed: ${e}`;
+    }
+  };
   const syncAuth = () => (q('#d-skeywrap').hidden = q('#d-sauth').value !== 'key');
   q('#d-sauth').onchange = syncAuth;
   syncAuth();
@@ -859,6 +920,20 @@ async function openDialog(editId) {
       if (!host) return err('Enter the board’s host name or IP address.');
       if (!(pn > 0)) return err('Enter a port between 1 and 65535.');
       config = { kind: 'tcp', host, port: pn, protocol: q('#d-proto').value, term: q('#d-term').value };
+    } else if (type === 'ble') {
+      const id = q('#d-bid').value.trim();
+      if (!id) return err('Scan for a device and pick it, or enter its name.');
+      const pre = q('#d-bpre').value;
+      const n = pre === 'nordic' ? '6E400003-B5A3-F393-E0A9-E50E24DCCA9E' : pre === 'hm10' ? 'FFE1' : q('#d-bnotify').value.trim();
+      const w = pre === 'nordic' ? '6E400002-B5A3-F393-E0A9-E50E24DCCA9E' : pre === 'hm10' ? 'FFE1' : q('#d-bwrite').value.trim();
+      config = { kind: 'ble', id, name: q('#d-bid').dataset.name || (c.kind === 'ble' && c.id === id ? c.name : ''), notify_char: n, write_char: w };
+    } else if (type === 'hid') {
+      const vid = parseInt(q('#d-hvid').value, 16);
+      const pid = parseInt(q('#d-hpid').value, 16);
+      const size = Number(q('#d-hsize').value);
+      if (!(vid > 0 && vid < 65536) || !(pid >= 0 && pid < 65536)) return err('Enter the vendor and product id as hex numbers, for example 1209 and C55D.');
+      if (!(size >= 1 && size <= 1024)) return err('Enter an output report size between 1 and 1024 bytes.');
+      config = { kind: 'hid', vendor_id: vid, product_id: pid, path: q('#d-hpath').value, report_size: size };
     } else if (type === 'ssh') {
       const host = q('#d-shost').value.trim();
       const user = q('#d-suser').value.trim();

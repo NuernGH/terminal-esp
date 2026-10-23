@@ -233,3 +233,4 @@ body.reordering { user-select: none; cursor: grabbing; }
 #d-type button:nth-child(3n) { border-right: 0; }
 #d-type button:nth-last-child(-n+3) { border-bottom: 0; }
 .dlg code { font-family: var(--mono); font-size: 11.5px; }
+#d-type button:nth-last-child(-n+3) { border-bottom: 0; }

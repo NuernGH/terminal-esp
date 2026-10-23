@@ -136,6 +136,12 @@ function mockCall(cmd, a) {
       return Promise.resolve('');
     case 'session_clear':
       return Promise.resolve();
+    case 'ble_scan':
+      return new Promise((r) =>
+        setTimeout(() => r([{ name: 'ESP32-UART', id: 'hci0/dev_24_6F_28_AA_BB_CC', rssi: -52 }, { name: '', id: 'hci0/dev_5C_01_3B_11_22_33', rssi: -80 }]), 500),
+      );
+    case 'hid_list':
+      return Promise.resolve([{ vendor_id: 0x1209, product_id: 0xc55d, name: 'Custom Controller', path: '\\\\?\\hid#vid_1209&pid_c55d', usage_page: 0xff00, usage: 1 }]);
     case 'scan_network':
       return new Promise((r) =>
         setTimeout(

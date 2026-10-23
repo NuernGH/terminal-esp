@@ -131,6 +131,16 @@ fn session_clear(eng: State<Core>, id: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+async fn ble_scan() -> Result<Vec<esp_core::ble::BleDevice>, String> {
+    tauri::async_runtime::spawn_blocking(|| esp_core::ble::scan(4)).await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn hid_list() -> Result<Vec<esp_core::hid::HidDeviceInfo>, String> {
+    tauri::async_runtime::spawn_blocking(esp_core::hid::list).await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
 async fn scan_network(ports: Vec<u16>) -> Result<Vec<scan::Found>, String> {
     tauri::async_runtime::spawn_blocking(move || scan::scan_network(&ports))
         .await
@@ -307,6 +317,8 @@ fn main() {
             session_backlog,
             session_clear,
             scan_network,
+            ble_scan,
+            hid_list,
             open_window,
             esptool_path,
             avrdude_path,

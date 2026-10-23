@@ -16,7 +16,9 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 use telnet::TelnetFilter;
+pub mod ble;
 mod chan;
+pub mod hid;
 mod mqtt;
 mod ssh;
 
@@ -32,6 +34,18 @@ fn d_8() -> u8 {
 fn d_1() -> u8 {
     1
 }
+fn d_ble_notify() -> String {
+    ble::NORDIC_NOTIFY.into()
+}
+
+fn d_ble_write() -> String {
+    ble::NORDIC_WRITE.into()
+}
+
+fn d_report() -> usize {
+    64
+}
+
 fn d_xterm() -> String {
     "xterm-256color".into()
 }
@@ -89,6 +103,25 @@ pub enum Config {
         #[serde(default = "d_xterm")]
         term: String,
     },
+    /// Bluetooth LE serial (UART over GATT). `id` comes from a scan.
+    Ble {
+        id: String,
+        #[serde(default)]
+        name: String,
+        #[serde(default = "d_ble_notify")]
+        notify_char: String,
+        #[serde(default = "d_ble_write")]
+        write_char: String,
+    },
+    /// Raw USB HID reports as a byte stream.
+    Hid {
+        vendor_id: u16,
+        product_id: u16,
+        #[serde(default)]
+        path: String,
+        #[serde(default = "d_report")]
+        report_size: usize,
+    },
     /// Topics are shown as lines `[topic] payload`; sent lines are published.
     Mqtt {
         host: String,
@@ -118,6 +151,8 @@ impl Config {
             Config::Ws { url } => url.clone(),
             Config::Ssh { host, port, user, .. } => format!("{user}@{host}:{port}"),
             Config::Mqtt { host, port, .. } => format!("mqtt://{host}:{port}"),
+            Config::Ble { id, name, .. } => if name.is_empty() { id.clone() } else { name.clone() },
+            Config::Hid { vendor_id, product_id, .. } => format!("HID {vendor_id:04X}:{product_id:04X}"),
         }
     }
 }
@@ -431,6 +466,14 @@ fn open(cfg: &Config, secret: Option<String>, size: u32) -> Result<Opened, Strin
                 POLL,
             )?;
             Ok(Opened { reader: Box::new(io.reader), writer: Box::new(io.writer), telnet: false, eof_on_zero: true, control: None, resize: Some(io.resize) })
+        }
+        Config::Ble { id, notify_char, write_char, .. } => {
+            let io = ble::connect(ble::BleParams { id: id.clone(), notify_char: notify_char.clone(), write_char: write_char.clone() }, POLL)?;
+            Ok(Opened { reader: Box::new(io.reader), writer: Box::new(io.writer), telnet: false, eof_on_zero: true, control: None, resize: None })
+        }
+        Config::Hid { vendor_id, product_id, path, report_size } => {
+            let io = hid::connect(hid::HidParams { vendor_id: *vendor_id, product_id: *product_id, path: path.clone(), report_size: *report_size }, POLL)?;
+            Ok(Opened { reader: Box::new(io.reader), writer: Box::new(io.writer), telnet: false, eof_on_zero: true, control: None, resize: None })
         }
         Config::Mqtt { host, port, tls, user, client_id, subscribe, publish_topic } => {
             let io = mqtt::connect(
