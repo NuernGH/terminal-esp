@@ -9,7 +9,11 @@ mdns-sd = "0.21.6"
 serde = { version = "1.0.229", features = ["derive"] }
 serialport = "4.10.1"
 tungstenite = { version = "0.26", features = ["native-tls"] }
+russh = { version = "0.64", default-features = false, features = ["ring", "flate2", "rsa"] }
+rumqttc = { version = "0.25", default-features = false, features = ["use-native-tls"] }
+tokio = { version = "1", features = ["rt", "macros", "sync", "time", "net"] }
 
 [dev-dependencies]
 serde_json = "1.0.154"
 tempfile = "3.27.0"
+rand = "0.10"

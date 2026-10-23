@@ -57,8 +57,8 @@ const stateClass = (s) => (s.state === 'on' ? 'on' : s.state === 'connecting' ? 
 const stateTip = (s) =>
   s.state === 'off' ? 'Disconnected. Click to connect' : s.state === 'connecting' ? 'Connecting. Click to cancel' : 'Connected. Click to disconnect';
 const addrOf = (c) =>
-  c.kind === 'serial' ? `${c.port} · ${c.baud}` : c.kind === 'tcp' ? `${c.host}:${c.port}` : c.kind === 'ws' ? c.url : `udp://${c.host}:${c.port}`;
-const typeOf = (c) => (c.kind === 'serial' ? 'Serial' : c.kind === 'ws' ? 'WebSocket' : c.kind === 'tcp' ? (c.protocol === 'telnet' ? 'Telnet' : 'TCP') : 'UDP');
+  c.kind === 'serial' ? `${c.port} · ${c.baud}` : c.kind === 'tcp' ? `${c.host}:${c.port}` : c.kind === 'ws' ? c.url : c.kind === 'ssh' ? `${c.user}@${c.host}:${c.port}` : c.kind === 'mqtt' ? `mqtt://${c.host}:${c.port}` : `udp://${c.host}:${c.port}`;
+const typeOf = (c) => (c.kind === 'serial' ? 'Serial' : c.kind === 'ws' ? 'WebSocket' : c.kind === 'ssh' ? 'SSH' : c.kind === 'mqtt' ? 'MQTT' : c.kind === 'tcp' ? (c.protocol === 'telnet' ? 'Telnet' : 'TCP') : 'UDP');
 
 const leds = (s, full) =>
   `<span class="io"><i class="led rx" data-led="rx" data-sid="${s.id}"></i>RX${full ? ` <b data-cnt="rx" data-sid="${s.id}"></b>` : ''}<i class="led tx" data-led="tx" data-sid="${s.id}"></i>TX${full ? ` <b data-cnt="tx" data-sid="${s.id}"></b>` : ''}</span>`;
@@ -179,7 +179,7 @@ function addSession(info) {
 
 /** Telnet servers can ask for the window size; keep the core informed when it changes. */
 function reportSize(s) {
-  if (s.config.kind !== 'tcp' || !s.config.term) return;
+  if (!(s.config.kind === 'ssh' || (s.config.kind === 'tcp' && s.config.term))) return;
   const key = `${s.term.cols}x${s.term.rows}`;
   if (s.sizeKey === key) return;
   s.sizeKey = key;
@@ -358,10 +358,47 @@ async function sendText(s, text, echo) {
   }
 }
 
+/** SSH and MQTT logins: ask for the password once per run (kept in memory, never saved). */
+function needsSecret(s) {
+  const c = s.config;
+  return c.kind === 'ssh' || (c.kind === 'mqtt' && !!c.user);
+}
+
+function ensureSecret(s) {
+  if (!needsSecret(s) || s.secretSet) return Promise.resolve(true);
+  const c = s.config;
+  const key = c.kind === 'ssh' && c.key_path;
+  return new Promise((resolve) => {
+    const ov = document.createElement('div');
+    ov.className = 'ov';
+    ov.innerHTML = `<form class="dlg" role="dialog" aria-label="Login"><h3>${key ? 'Key passphrase' : 'Password'} for ${esc(addrOf(c))}</h3>
+      <div class="frm"><label class="full">${key ? 'Passphrase (leave empty if the key has none)' : 'Password'}<input id="p-secret" type="password" autocomplete="off"></label></div>
+      <p class="hint">It is kept in memory while the app runs, so reconnecting works, and it is never saved to disk.</p>
+      <div class="acts"><button type="button" class="btn ghost" id="p-cancel">Cancel</button><button class="btn">Connect</button></div></form>`;
+    document.body.append(ov);
+    const done = (v) => (ov.remove(), resolve(v));
+    $('#p-cancel', ov).onclick = () => done(false);
+    ov.addEventListener('keydown', (e) => e.key === 'Escape' && done(false));
+    $('form', ov).onsubmit = async (e) => {
+      e.preventDefault();
+      try {
+        await call('session_set_secret', { id: s.id, secret: $('#p-secret', ov).value });
+        s.secretSet = true;
+        done(true);
+      } catch (err) {
+        note(String(err), true);
+        done(false);
+      }
+    };
+    $('#p-secret', ov).focus();
+  });
+}
+
 async function toggle(id) {
   const s = get(id);
   if (!s) return;
   try {
+    if (s.state === 'off' && !(await ensureSecret(s))) return;
     await call(s.state === 'off' ? 'session_connect' : 'session_disconnect', { id });
   } catch (e) {
     note(String(e), true);
@@ -666,6 +703,8 @@ const baudOptions = (cur) =>
 const HINTS = {
   serial: 'A board plugged in by USB. Type a port name such as COM5 if it is not listed.',
   tcp: 'Telnet or raw TCP to a WiFi serial bridge (ESP-Link, ESP3D, ser2net or your own sketch).',
+  ssh: 'A secure shell on a Linux machine, Raspberry Pi, router or server. New host keys are saved on first use and checked afterwards.',
+  mqtt: 'Connects to a broker. Received messages appear as [topic] payload lines; lines you send are published.',
   udp: 'Connectionless datagrams. Use the same local port in the board firmware.',
   ws: 'A WebSocket endpoint, for example the one an ESP32 web server or a browser tool exposes. Text and binary messages are shown as a stream.',
 };
@@ -686,6 +725,8 @@ async function openDialog(editId) {
       <button type="button" data-t="tcp">TCP / Telnet<small>WiFi serial bridge</small></button>
       <button type="button" data-t="udp">UDP<small>Datagrams</small></button>
       <button type="button" data-t="ws">WebSocket<small>ws:// or wss://</small></button>
+      <button type="button" data-t="ssh">SSH<small>Linux, Pi, routers</small></button>
+      <button type="button" data-t="mqtt">MQTT<small>Topics and messages</small></button>
     </div>
     <div class="frm" data-for="serial">
       <label class="full">Port<input id="d-port" list="d-ports" value="${esc(c.kind === 'serial' ? c.port : ports[0]?.name ?? '')}" autocomplete="off"><datalist id="d-ports">${ports.map((p) => `<option value="${esc(p.name)}">${esc(p.description)}</option>`).join('')}</datalist></label>
@@ -710,6 +751,23 @@ async function openDialog(editId) {
     <div class="frm" data-for="ws">
       <label class="full">URL<input id="d-wsurl" value="${esc(c.kind === 'ws' ? c.url : '')}" placeholder="ws://192.168.1.60:81/" autocomplete="off" spellcheck="false"></label>
     </div>
+    <div class="frm" data-for="ssh">
+      <label>Host or IP<input id="d-shost" value="${esc(c.kind === 'ssh' ? c.host : '')}" placeholder="raspberrypi.local" autocomplete="off" spellcheck="false"></label>
+      <label>Port<input id="d-sport" value="${c.kind === 'ssh' ? c.port : 22}" inputmode="numeric"></label>
+      <label>User name<input id="d-suser" value="${esc(c.kind === 'ssh' ? c.user : '')}" placeholder="pi" autocomplete="off" spellcheck="false"></label>
+      <label>Login with<select id="d-sauth"><option value="password"${c.kind === 'ssh' && c.key_path ? '' : ' selected'}>Password</option><option value="key"${c.kind === 'ssh' && c.key_path ? ' selected' : ''}>Private key file</option></select></label>
+      <label class="full" id="d-skeywrap">Private key file<input id="d-skey" value="${esc(c.kind === 'ssh' ? c.key_path : '')}" placeholder="C:\\Users\\me\\.ssh\\id_ed25519" autocomplete="off" spellcheck="false"></label>
+      <label class="full">Terminal type<select id="d-sterm">${['xterm-256color', 'xterm', 'vt100', 'linux'].map((t) => `<option${(c.kind === 'ssh' ? c.term : 'xterm-256color') === t ? ' selected' : ''}>${t}</option>`).join('')}</select></label>
+    </div>
+    <div class="frm" data-for="mqtt">
+      <label>Broker host<input id="d-mhost" value="${esc(c.kind === 'mqtt' ? c.host : '')}" placeholder="192.168.1.10" autocomplete="off" spellcheck="false"></label>
+      <label>Port<input id="d-mport" value="${c.kind === 'mqtt' ? c.port : 1883}" inputmode="numeric"></label>
+      <label>User name (empty for none)<input id="d-muser" value="${esc(c.kind === 'mqtt' ? c.user : '')}" autocomplete="off" spellcheck="false"></label>
+      <label>Client id (empty for automatic)<input id="d-mid" value="${esc(c.kind === 'mqtt' ? c.client_id : '')}" autocomplete="off" spellcheck="false"></label>
+      <label class="full">Subscribe to (comma separated, # = everything)<input id="d-msub" value="${esc(c.kind === 'mqtt' ? c.subscribe : '#')}" autocomplete="off" spellcheck="false"></label>
+      <label class="full">Publish topic (empty: type <code>topic message</code> to publish)<input id="d-mpub" value="${esc(c.kind === 'mqtt' ? c.publish_topic : '')}" autocomplete="off" spellcheck="false"></label>
+      <label class="chk full"><input type="checkbox" id="d-mtls"${c.kind === 'mqtt' && c.tls ? ' checked' : ''}> Use TLS (usually port 8883)</label>
+    </div>
     <div class="scanbox" id="d-scanbox">
       <div class="top"><button type="button" class="btn ghost sm" id="d-scan">Scan network</button>
         <label style="display:flex;gap:5px;align-items:center;font-size:11.5px;color:var(--mute)">Ports <input id="d-sports" value="23, 8266"></label>
@@ -730,7 +788,7 @@ async function openDialog(editId) {
     type = t;
     $$('#d-type button', ov).forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.t === t)));
     $$('[data-for]', ov).forEach((f) => (f.hidden = f.dataset.for !== t));
-    q('#d-scanbox').hidden = t === 'serial' || t === 'ws';
+    q('#d-scanbox').hidden = !(t === 'tcp' || t === 'udp');
     q('#d-hint').textContent = HINTS[t];
   };
   setType(type);
@@ -738,6 +796,9 @@ async function openDialog(editId) {
   q('#d-cancel').onclick = close;
   ov.addEventListener('mousedown', (e) => e.target === ov && close());
   ov.addEventListener('keydown', (e) => e.key === 'Escape' && close());
+  const syncAuth = () => (q('#d-skeywrap').hidden = q('#d-sauth').value !== 'key');
+  q('#d-sauth').onchange = syncAuth;
+  syncAuth();
   q('#d-name').focus();
 
   q('#d-scan').onclick = async () => {
@@ -798,6 +859,22 @@ async function openDialog(editId) {
       if (!host) return err('Enter the board’s host name or IP address.');
       if (!(pn > 0)) return err('Enter a port between 1 and 65535.');
       config = { kind: 'tcp', host, port: pn, protocol: q('#d-proto').value, term: q('#d-term').value };
+    } else if (type === 'ssh') {
+      const host = q('#d-shost').value.trim();
+      const user = q('#d-suser').value.trim();
+      const pn = port(q('#d-sport').value);
+      const key = q('#d-sauth').value === 'key' ? q('#d-skey').value.trim() : '';
+      if (!host) return err('Enter the server’s host name or IP address.');
+      if (!user) return err('Enter the user name to log in with.');
+      if (!(pn > 0)) return err('Enter a port between 1 and 65535.');
+      if (q('#d-sauth').value === 'key' && !key) return err('Enter the path of the private key file.');
+      config = { kind: 'ssh', host, port: pn, user, key_path: key, term: q('#d-sterm').value };
+    } else if (type === 'mqtt') {
+      const host = q('#d-mhost').value.trim();
+      const pn = port(q('#d-mport').value);
+      if (!host) return err('Enter the broker’s host name or IP address.');
+      if (!(pn > 0)) return err('Enter a port between 1 and 65535.');
+      config = { kind: 'mqtt', host, port: pn, tls: q('#d-mtls').checked, user: q('#d-muser').value.trim(), client_id: q('#d-mid').value.trim(), subscribe: q('#d-msub').value.trim(), publish_topic: q('#d-mpub').value.trim() };
     } else if (type === 'ws') {
       const url = q('#d-wsurl').value.trim();
       if (!/^wss?:\/\/\S+$/i.test(url)) return err('Enter a URL that starts with ws:// or wss://');
@@ -825,12 +902,13 @@ async function openDialog(editId) {
       editing.enc = enc;
       editing.localEcho = localEcho;
       editing.autoReconnect = autoReconnect;
+      editing.secretSet = false;
       await call('session_create', { id: editing.id, name, config, autoReconnect });
       persist();
       renderAll();
       if (wasOn) {
         await call('session_disconnect', { id: editing.id });
-        await call('session_connect', { id: editing.id });
+        if (await ensureSecret(editing)) await call('session_connect', { id: editing.id });
       }
     } else {
       const id = 's' + Date.now().toString(36);

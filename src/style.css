@@ -228,3 +228,8 @@ body.reordering { user-select: none; cursor: grabbing; }
 .acts .sp { flex: 1; }
 .bar { height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; margin: 8px 0; }
 .bar i { display: block; height: 100%; width: 0; background: var(--accent); }
+#d-type { display: grid; grid-template-columns: repeat(3, 1fr); }
+#d-type button { border-bottom: 1px solid var(--line); }
+#d-type button:nth-child(3n) { border-right: 0; }
+#d-type button:nth-last-child(-n+3) { border-bottom: 0; }
+.dlg code { font-family: var(--mono); font-size: 11.5px; }

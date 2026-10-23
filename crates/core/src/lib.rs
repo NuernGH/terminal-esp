@@ -16,6 +16,9 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 use telnet::TelnetFilter;
+mod chan;
+mod mqtt;
+mod ssh;
 
 const BACKLOG_MAX: usize = 512 * 1024;
 const POLL: Duration = Duration::from_millis(100);
@@ -29,6 +32,10 @@ fn d_8() -> u8 {
 fn d_1() -> u8 {
     1
 }
+fn d_xterm() -> String {
+    "xterm-256color".into()
+}
+
 fn d_none() -> String {
     "none".into()
 }
@@ -71,6 +78,34 @@ pub enum Config {
     Ws {
         url: String,
     },
+    /// Interactive shell over SSH. The password (or key passphrase) is never stored in the config.
+    Ssh {
+        host: String,
+        port: u16,
+        user: String,
+        /// Path of a private key file; empty means password login.
+        #[serde(default)]
+        key_path: String,
+        #[serde(default = "d_xterm")]
+        term: String,
+    },
+    /// Topics are shown as lines `[topic] payload`; sent lines are published.
+    Mqtt {
+        host: String,
+        port: u16,
+        #[serde(default)]
+        tls: bool,
+        #[serde(default)]
+        user: String,
+        #[serde(default)]
+        client_id: String,
+        /// Comma separated topic filters, for example `home/#, sensors/+/temp`.
+        #[serde(default)]
+        subscribe: String,
+        /// When set, every line you send is published to this topic as the payload.
+        #[serde(default)]
+        publish_topic: String,
+    },
 }
 
 impl Config {
@@ -81,6 +116,8 @@ impl Config {
             Config::Tcp { host, port, .. } => format!("{host}:{port}"),
             Config::Udp { host, port, .. } => format!("udp://{host}:{port}"),
             Config::Ws { url } => url.clone(),
+            Config::Ssh { host, port, user, .. } => format!("{user}@{host}:{port}"),
+            Config::Mqtt { host, port, .. } => format!("mqtt://{host}:{port}"),
         }
     }
 }
@@ -154,6 +191,7 @@ struct Conn {
     telnet: bool,
     /// Handle to the open serial port, used to change settings while connected.
     serial: Option<Mutex<Box<dyn serialport::SerialPort>>>,
+    resize: Option<Box<dyn Fn(u16, u16) + Send + Sync>>,
 }
 
 struct Meta {
@@ -178,6 +216,8 @@ struct Session {
     /// Terminal window size as `cols << 16 | rows`, reported to Telnet servers.
     size: Arc<AtomicU32>,
     naws: Arc<AtomicBool>,
+    /// Password or key passphrase for SSH and MQTT; kept in memory only.
+    secret: Mutex<Option<String>>,
 }
 
 /// Decrements the live-thread counter when an I/O thread ends.
@@ -213,6 +253,8 @@ struct Opened {
     /// A zero-length read means the peer closed (true for TCP, not for UDP).
     eof_on_zero: bool,
     control: Option<Box<dyn serialport::SerialPort>>,
+    /// Tells the far end the terminal size changed (SSH).
+    resize: Option<Box<dyn Fn(u16, u16) + Send + Sync>>,
 }
 
 /// A WebSocket seen as a byte stream: incoming messages are concatenated, outgoing writes become one message each.
@@ -279,7 +321,14 @@ impl Write for UdpIo {
     }
 }
 
-fn open(cfg: &Config) -> Result<Opened, String> {
+static DATA_DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+
+/// Where the engine keeps small files of its own (SSH known hosts).
+pub fn set_data_dir(dir: std::path::PathBuf) {
+    let _ = DATA_DIR.set(dir);
+}
+
+fn open(cfg: &Config, secret: Option<String>, size: u32) -> Result<Opened, String> {
     match cfg {
         Config::Serial { port, baud, data_bits, parity, stop_bits, flow, reset_on_connect } => {
             use serialport::{DataBits, FlowControl, Parity, StopBits};
@@ -320,7 +369,7 @@ fn open(cfg: &Config) -> Result<Opened, String> {
             }
             let writer = p.try_clone().map_err(|e| e.to_string())?;
             let control = p.try_clone().map_err(|e| e.to_string())?;
-            Ok(Opened { reader: Box::new(p), writer: Box::new(writer), telnet: false, eof_on_zero: false, control: Some(control) })
+            Ok(Opened { reader: Box::new(p), writer: Box::new(writer), telnet: false, eof_on_zero: false, control: Some(control), resize: None })
         }
         Config::Tcp { host, port, protocol, .. } => {
             let addrs = (host.as_str(), *port)
@@ -339,6 +388,7 @@ fn open(cfg: &Config) -> Result<Opened, String> {
                             telnet: protocol == "telnet",
                             eof_on_zero: true,
                             control: None,
+                resize: None,
                         });
                     }
                     Err(e) => last = format!("Cannot connect to {a}: {e}"),
@@ -362,7 +412,41 @@ fn open(cfg: &Config) -> Result<Opened, String> {
                 telnet: false,
                 eof_on_zero: true,
                 control: None,
+                resize: None,
             })
+        }
+        Config::Ssh { host, port, user, key_path, term } => {
+            let io = ssh::connect(
+                ssh::SshParams {
+                    host: host.clone(),
+                    port: *port,
+                    user: user.clone(),
+                    key_path: key_path.clone(),
+                    secret,
+                    term: term.clone(),
+                    cols: (size >> 16) as u16,
+                    rows: size as u16,
+                    known_hosts: DATA_DIR.get().map(|d| d.join("known_hosts")),
+                },
+                POLL,
+            )?;
+            Ok(Opened { reader: Box::new(io.reader), writer: Box::new(io.writer), telnet: false, eof_on_zero: true, control: None, resize: Some(io.resize) })
+        }
+        Config::Mqtt { host, port, tls, user, client_id, subscribe, publish_topic } => {
+            let io = mqtt::connect(
+                mqtt::MqttParams {
+                    host: host.clone(),
+                    port: *port,
+                    tls: *tls,
+                    user: user.clone(),
+                    password: secret,
+                    client_id: client_id.clone(),
+                    subscribe: subscribe.split(',').map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).collect(),
+                    publish_topic: publish_topic.clone(),
+                },
+                POLL,
+            )?;
+            Ok(Opened { reader: Box::new(io.reader), writer: Box::new(io.writer), telnet: false, eof_on_zero: true, control: None, resize: None })
         }
         Config::Udp { host, port, local_port } => {
             let sock = UdpSocket::bind(("0.0.0.0", *local_port))
@@ -371,7 +455,7 @@ fn open(cfg: &Config) -> Result<Opened, String> {
                 .map_err(|e| format!("Cannot reach {host}:{port}: {e}"))?;
             sock.set_read_timeout(Some(POLL)).map_err(|e| e.to_string())?;
             let w = sock.try_clone().map_err(|e| e.to_string())?;
-            Ok(Opened { reader: Box::new(UdpIo(sock)), writer: Box::new(UdpIo(w)), telnet: false, eof_on_zero: false, control: None })
+            Ok(Opened { reader: Box::new(UdpIo(sock)), writer: Box::new(UdpIo(w)), telnet: false, eof_on_zero: false, control: None, resize: None })
         }
     }
 }
@@ -434,6 +518,7 @@ impl Manager {
                 fast_fails: AtomicU32::new(0),
                 size: Arc::new(AtomicU32::new(80 << 16 | 24)),
                 naws: Arc::new(AtomicBool::new(false)),
+                secret: Mutex::new(None),
             }),
         );
     }
@@ -526,7 +611,8 @@ impl Manager {
             }
             loop {
                 let cfg = s.meta.lock().unwrap().config.clone();
-                match open(&cfg) {
+                let secret = s.secret.lock().unwrap().clone();
+                match open(&cfg, secret, s.size.load(Ordering::Relaxed)) {
                     Ok(opened) => {
                         if current(&s) {
                             m.start_io(&id, &s, generation, opened);
@@ -596,6 +682,7 @@ impl Manager {
             stop: stop.clone(),
             telnet: opened.telnet,
             serial: opened.control.map(Mutex::new),
+            resize: opened.resize,
         });
         self.set_state(id, s, ConnState::On, None);
 
@@ -726,9 +813,18 @@ impl Manager {
     }
 
     /// Tells the board how big the terminal is (Telnet window size option).
+    /// Remembers a password or key passphrase for this session (memory only, never saved).
+    pub fn set_secret(&self, id: &str, secret: Option<String>) -> Result<(), String> {
+        *self.get(id)?.secret.lock().unwrap() = secret;
+        Ok(())
+    }
+
     pub fn resize(&self, id: &str, cols: u16, rows: u16) -> Result<(), String> {
         let s = self.get(id)?;
         s.size.store((cols as u32) << 16 | rows as u32, Ordering::Relaxed);
+        if let Some(Conn { resize: Some(f), .. }) = s.conn.lock().unwrap().as_ref() {
+            f(cols, rows);
+        }
         if s.naws.load(Ordering::Relaxed) {
             if let Some(c) = s.conn.lock().unwrap().as_ref() {
                 let _ = c.tx.send(telnet::naws_bytes(cols, rows));

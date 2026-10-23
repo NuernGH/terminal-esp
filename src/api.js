@@ -113,6 +113,9 @@ function mockCall(cmd, a) {
       emit({ type: 'stats', rows: [{ id: a.id, rx: s.rx, tx: s.tx }] });
       return Promise.resolve();
     }
+    case 'session_set_secret':
+      (window.__secrets ??= []).push([a.id, a.secret]);
+      return Promise.resolve();
     case 'session_resize':
       (window.__resized ??= []).push([a.id, a.cols, a.rows]);
       return Promise.resolve();

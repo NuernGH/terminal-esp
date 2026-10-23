@@ -81,6 +81,12 @@ fn session_send(eng: State<Core>, id: String, data: String) -> Result<(), String
     eng.0.send(&id, data.as_bytes())
 }
 
+/// Password or key passphrase for SSH / MQTT; held in memory only.
+#[tauri::command]
+fn session_set_secret(eng: State<Core>, id: String, secret: Option<String>) -> Result<(), String> {
+    eng.0.set_secret(&id, secret)
+}
+
 #[tauri::command]
 fn session_resize(eng: State<Core>, id: String, cols: u16, rows: u16) -> Result<(), String> {
     eng.0.resize(&id, cols, rows)
@@ -275,6 +281,9 @@ fn main() {
             let mgr = Manager::new(move |e| {
                 let _ = handle.emit("session", payload(e));
             });
+            if let Ok(dir) = app.path().app_data_dir() {
+                esp_core::set_data_dir(dir);
+            }
             app.manage(Core(mgr));
             app.manage(FlashJob(Mutex::new(None)));
             Ok(())
@@ -292,6 +301,7 @@ fn main() {
             session_send,
             session_send_bytes,
             session_resize,
+            session_set_secret,
             read_file_b64,
             append_file,
             session_backlog,
