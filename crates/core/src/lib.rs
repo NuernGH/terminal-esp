@@ -607,7 +607,7 @@ impl Manager {
                 let message = message.or(write_failed);
                 let auto = s.meta.lock().unwrap().auto_reconnect;
                 // A connection that dies within seconds of opening counts as a fast failure.
-                // Back off each time, and give up after a few so the app does not spin forever.
+                // Back off each time (capped) so the app does not spin.
                 let fails = if started.elapsed() < Duration::from_secs(3) {
                     s.fast_fails.fetch_add(1, Ordering::SeqCst) + 1
                 } else {
@@ -615,17 +615,14 @@ impl Manager {
                     0
                 };
                 match message {
-                    Some(msg) if auto && fails < 5 => {
-                        let delay = *m.inner.retry_delay.lock().unwrap() * (1 << fails.min(3));
-                        m.set_state(&id, &s, ConnState::Connecting, Some(format!("{msg}. Reconnecting…")));
+                    Some(msg) if auto => {
+                        // Keep trying for as long as auto-reconnect is on, backing off to at most 5 s,
+                        // so a board that is replugged or put into bootloader mode comes back by itself.
+                        let delay = (*m.inner.retry_delay.lock().unwrap() * (1 << fails.min(3))).min(Duration::from_secs(5));
+                        let note = if fails <= 2 { Some(format!("{msg}. Reconnecting…")) } else { None };
+                        m.set_state(&id, &s, ConnState::Connecting, note);
                         m.spawn_connect(&id, s.clone(), generation, delay);
                     }
-                    Some(msg) if auto => m.set_state(
-                        &id,
-                        &s,
-                        ConnState::Off,
-                        Some(format!("{msg}. Stopped reconnecting after repeated failures. Fix the cause, then connect again.")),
-                    ),
                     other => m.set_state(&id, &s, ConnState::Off, other),
                 }
             }
@@ -830,7 +827,7 @@ mod tests {
     }
 
     #[test]
-    fn repeated_instant_failures_stop_the_reconnect_loop() {
+    fn repeated_instant_failures_keep_retrying_until_disconnected() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let _srv = thread::spawn(move || {
@@ -842,6 +839,9 @@ mod tests {
         m.set_retry_delay(Duration::from_millis(10));
         m.create("f", "Flaky", Config::Tcp { host: "127.0.0.1".into(), port, protocol: "raw".into() }, true);
         m.connect("f").unwrap();
+        thread::sleep(Duration::from_millis(800));
+        assert_ne!(m.list()[0].state, ConnState::Off, "auto-reconnect keeps going");
+        m.disconnect("f").unwrap();
         assert!(wait_for(|| m.list()[0].state == ConnState::Off));
     }
 
