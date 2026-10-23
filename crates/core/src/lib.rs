@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::io::{self, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs, UdpSocket};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -162,6 +162,26 @@ struct Session {
     rx: AtomicU64,
     tx: AtomicU64,
     backlog: Mutex<VecDeque<u8>>,
+    /// Reader/writer threads still holding the port. A new open must wait for 0,
+    /// otherwise Windows answers "Access is denied" for a moment after a disconnect.
+    io_active: Arc<AtomicUsize>,
+    /// Connections in a row that failed within seconds of opening.
+    fast_fails: AtomicU32,
+}
+
+/// Decrements the live-thread counter when an I/O thread ends.
+struct IoGuard(Arc<AtomicUsize>);
+impl Drop for IoGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+fn describe_io_error(e: &io::Error, serial: bool) -> String {
+    if serial && e.raw_os_error() == Some(22) {
+        return "The USB serial device stopped responding (error 22). It was reset or unplugged, or the board's USB port is not ready".to_string();
+    }
+    format!("{e}")
 }
 
 struct Inner {
@@ -225,7 +245,14 @@ fn open(cfg: &Config) -> Result<Opened, String> {
                     _ => FlowControl::None,
                 })
                 .open()
-                .map_err(|e| format!("Cannot open {port}: {e}"))?;
+                .map_err(|e| {
+                    let hint = if e.to_string().to_lowercase().contains("denied") || e.to_string().to_lowercase().contains("busy") {
+                        " Another program may be using the port (Arduino IDE, another terminal), or the board was just unplugged."
+                    } else {
+                        ""
+                    };
+                    format!("Cannot open {port}: {e}.{hint}")
+                })?;
             if *reset_on_connect {
                 // Pulse EN via RTS with GPIO0 released (DTR low): a normal run reset.
                 let _ = p.write_data_terminal_ready(false);
@@ -327,6 +354,8 @@ impl Manager {
                 rx: AtomicU64::new(0),
                 tx: AtomicU64::new(0),
                 backlog: Mutex::new(VecDeque::new()),
+                io_active: Arc::new(AtomicUsize::new(0)),
+                fast_fails: AtomicU32::new(0),
             }),
         );
     }
@@ -380,40 +409,67 @@ impl Manager {
         if let Some(old) = s.conn.lock().unwrap().take() {
             old.stop.store(true, Ordering::SeqCst);
         }
+        s.fast_fails.store(0, Ordering::SeqCst);
         self.set_state(id, &s, ConnState::Connecting, None);
-        self.spawn_connect(id, s, generation);
+        self.spawn_connect(id, s, generation, Duration::ZERO);
         Ok(())
+    }
+
+    /// Waits until the session's I/O threads have released the port (after a disconnect).
+    pub fn wait_released(&self, id: &str, timeout: Duration) -> bool {
+        let Ok(s) = self.get(id) else { return true };
+        let end = std::time::Instant::now() + timeout;
+        while s.io_active.load(Ordering::SeqCst) > 0 {
+            if std::time::Instant::now() > end {
+                return false;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        true
     }
 
     /// Tries to open the transport. With auto-reconnect on, keeps trying until it
     /// works or the user disconnects; otherwise reports the first failure.
-    fn spawn_connect(&self, id: &str, s: Arc<Session>, generation: u64) {
+    fn spawn_connect(&self, id: &str, s: Arc<Session>, generation: u64, first_delay: Duration) {
         let m = self.clone();
         let id = id.to_string();
-        thread::spawn(move || loop {
-            let cfg = s.meta.lock().unwrap().config.clone();
-            match open(&cfg) {
-                Ok(opened) => {
-                    if s.generation.load(Ordering::SeqCst) == generation {
-                        m.start_io(&id, &s, generation, opened);
-                    }
+        thread::spawn(move || {
+            let current = |s: &Session| s.generation.load(Ordering::SeqCst) == generation;
+            // Back off first, and let a previous connection finish releasing the port.
+            let until = std::time::Instant::now() + first_delay;
+            let drain_limit = std::time::Instant::now() + Duration::from_secs(3);
+            while std::time::Instant::now() < until
+                || (s.io_active.load(Ordering::SeqCst) > 0 && std::time::Instant::now() < drain_limit)
+            {
+                if !current(&s) {
                     return;
                 }
-                Err(e) => {
-                    if s.generation.load(Ordering::SeqCst) != generation {
+                thread::sleep(Duration::from_millis(20));
+            }
+            loop {
+                let cfg = s.meta.lock().unwrap().config.clone();
+                match open(&cfg) {
+                    Ok(opened) => {
+                        if current(&s) {
+                            m.start_io(&id, &s, generation, opened);
+                        }
                         return;
                     }
-                    if !s.meta.lock().unwrap().auto_reconnect {
-                        m.set_state(&id, &s, ConnState::Off, Some(e));
-                        return;
-                    }
-                    let delay = *m.inner.retry_delay.lock().unwrap();
-                    let until = std::time::Instant::now() + delay;
-                    while std::time::Instant::now() < until {
-                        if s.generation.load(Ordering::SeqCst) != generation {
+                    Err(e) => {
+                        if !current(&s) {
                             return;
                         }
-                        thread::sleep(Duration::from_millis(20));
+                        if !s.meta.lock().unwrap().auto_reconnect {
+                            m.set_state(&id, &s, ConnState::Off, Some(e));
+                            return;
+                        }
+                        let until = std::time::Instant::now() + *m.inner.retry_delay.lock().unwrap();
+                        while std::time::Instant::now() < until {
+                            if !current(&s) {
+                                return;
+                            }
+                            thread::sleep(Duration::from_millis(20));
+                        }
                     }
                 }
             }
@@ -452,6 +508,10 @@ impl Manager {
 
     fn start_io(&self, id: &str, s: &Arc<Session>, generation: u64, opened: Opened) {
         let stop = Arc::new(AtomicBool::new(false));
+        let started = std::time::Instant::now();
+        let is_serial = opened.control.is_some();
+        let write_failure: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        s.io_active.fetch_add(2, Ordering::SeqCst);
         let (tx, rx) = mpsc::channel::<Vec<u8>>();
         *s.conn.lock().unwrap() = Some(Conn {
             tx: tx.clone(),
@@ -463,22 +523,27 @@ impl Manager {
 
         // Writer
         {
-            let (stop, s) = (stop.clone(), s.clone());
+            let (stop, s, failure) = (stop.clone(), s.clone(), write_failure.clone());
             let mut writer = opened.writer;
-            thread::spawn(move || loop {
-                match rx.recv_timeout(POLL) {
-                    Ok(data) => {
-                        if writer.write_all(&data).and_then(|_| writer.flush()).is_err() {
-                            break;
+            thread::spawn(move || {
+                let _guard = IoGuard(s.io_active.clone());
+                loop {
+                    match rx.recv_timeout(POLL) {
+                        Ok(data) => {
+                            if let Err(e) = writer.write_all(&data).and_then(|_| writer.flush()) {
+                                *failure.lock().unwrap() = Some(format!("Write failed: {}", describe_io_error(&e, is_serial)));
+                                stop.store(true, Ordering::SeqCst);
+                                break;
+                            }
+                            s.tx.fetch_add(data.len() as u64, Ordering::Relaxed);
                         }
-                        s.tx.fetch_add(data.len() as u64, Ordering::Relaxed);
-                    }
-                    Err(RecvTimeoutError::Timeout) => {
-                        if stop.load(Ordering::SeqCst) {
-                            break;
+                        Err(RecvTimeoutError::Timeout) => {
+                            if stop.load(Ordering::SeqCst) {
+                                break;
+                            }
                         }
+                        Err(RecvTimeoutError::Disconnected) => break,
                     }
-                    Err(RecvTimeoutError::Disconnected) => break,
                 }
             });
         }
@@ -488,6 +553,7 @@ impl Manager {
         let mut reader = opened.reader;
         let (telnet, eof_on_zero) = (opened.telnet, opened.eof_on_zero);
         thread::spawn(move || {
+            let _guard = IoGuard(s.io_active.clone());
             let mut filter = TelnetFilter::default();
             let mut buf = [0u8; 8192];
             let mut message = None;
@@ -528,21 +594,38 @@ impl Manager {
                         // Windows reports ICMP "port unreachable" on connected UDP sockets this way.
                         io::ErrorKind::ConnectionReset if !eof_on_zero => {}
                         _ => {
-                            message = Some(format!("Connection lost: {e}"));
+                            message = Some(format!("Connection lost: {}", describe_io_error(&e, is_serial)));
                             break;
                         }
                     },
                 }
             }
+            let write_failed = write_failure.lock().unwrap().take();
             stop.store(true, Ordering::SeqCst);
             if s.generation.load(Ordering::SeqCst) == generation {
                 *s.conn.lock().unwrap() = None;
+                let message = message.or(write_failed);
                 let auto = s.meta.lock().unwrap().auto_reconnect;
+                // A connection that dies within seconds of opening counts as a fast failure.
+                // Back off each time, and give up after a few so the app does not spin forever.
+                let fails = if started.elapsed() < Duration::from_secs(3) {
+                    s.fast_fails.fetch_add(1, Ordering::SeqCst) + 1
+                } else {
+                    s.fast_fails.store(0, Ordering::SeqCst);
+                    0
+                };
                 match message {
-                    Some(msg) if auto => {
+                    Some(msg) if auto && fails < 5 => {
+                        let delay = *m.inner.retry_delay.lock().unwrap() * (1 << fails.min(3));
                         m.set_state(&id, &s, ConnState::Connecting, Some(format!("{msg}. Reconnecting…")));
-                        m.spawn_connect(&id, s.clone(), generation);
+                        m.spawn_connect(&id, s.clone(), generation, delay);
                     }
+                    Some(msg) if auto => m.set_state(
+                        &id,
+                        &s,
+                        ConnState::Off,
+                        Some(format!("{msg}. Stopped reconnecting after repeated failures. Fix the cause, then connect again.")),
+                    ),
                     other => m.set_state(&id, &s, ConnState::Off, other),
                 }
             }
@@ -744,5 +827,37 @@ mod tests {
         assert!(matches!(info.config, Config::Serial { baud: 921600, .. }));
         m.set_auto_reconnect("s", true).unwrap();
         assert!(m.list().into_iter().find(|i| i.id == "s").unwrap().auto_reconnect);
+    }
+
+    #[test]
+    fn repeated_instant_failures_stop_the_reconnect_loop() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let _srv = thread::spawn(move || {
+            for c in listener.incoming() {
+                drop(c); // accept and hang up at once
+            }
+        });
+        let m = Manager::new(|_| {});
+        m.set_retry_delay(Duration::from_millis(10));
+        m.create("f", "Flaky", Config::Tcp { host: "127.0.0.1".into(), port, protocol: "raw".into() }, true);
+        m.connect("f").unwrap();
+        assert!(wait_for(|| m.list()[0].state == ConnState::Off));
+    }
+
+    #[test]
+    fn port_is_released_after_disconnect() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let _srv = thread::spawn(move || {
+            let (_c, _) = listener.accept().unwrap();
+            thread::sleep(Duration::from_secs(2));
+        });
+        let m = Manager::new(|_| {});
+        m.create("p", "P", Config::Tcp { host: "127.0.0.1".into(), port, protocol: "raw".into() }, false);
+        m.connect("p").unwrap();
+        assert!(wait_for(|| m.list()[0].state == ConnState::On));
+        m.disconnect("p").unwrap();
+        assert!(m.wait_released("p", Duration::from_secs(2)));
     }
 }

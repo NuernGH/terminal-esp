@@ -28,6 +28,17 @@ jobs:
           if (-not $exe) { throw "esptool.exe not found in the release archive" }
           Copy-Item "$($exe.Directory.FullName)\*" src-tauri/resources/esptool -Recurse -Force
           & "src-tauri/resources/esptool/esptool.exe" --help | Select-Object -First 3
+      - name: Bundle avrdude
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download -R avrdudes/avrdude -p "*windows-x64*.zip" -D avrdude-dl
+          Expand-Archive (Get-ChildItem avrdude-dl/*.zip).FullName -DestinationPath avrdude-dl/x
+          $exe = Get-ChildItem avrdude-dl/x -Recurse -Filter avrdude.exe | Select-Object -First 1
+          if (-not $exe) { throw "avrdude.exe not found in the release archive" }
+          Copy-Item "$($exe.Directory.FullName)\*" src-tauri/resources/avrdude -Recurse -Force
+          & "src-tauri/resources/avrdude/avrdude.exe" -? 2>&1 | Select-Object -First 2
       - run: cargo test -p esp_core
       - run: npx tauri build
       - uses: actions/upload-artifact@v4

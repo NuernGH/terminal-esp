@@ -35,20 +35,21 @@ pub fn parse_percent(line: &str) -> Option<f32> {
 /// Looks for the esptool executable in the given folders (up to 3 levels deep),
 /// then on PATH.
 pub fn find_esptool(dirs: &[PathBuf]) -> Option<PathBuf> {
-    fn is_esptool(name: &str) -> bool {
-        matches!(name, "esptool" | "esptool.exe" | "esptool.py")
-    }
-    fn walk(dir: &Path, depth: u32) -> Option<PathBuf> {
+    find_named(&["esptool", "esptool.exe", "esptool.py"], dirs)
+}
+
+fn find_named(names: &[&str], dirs: &[PathBuf]) -> Option<PathBuf> {
+    fn walk(dir: &Path, depth: u32, names: &[&str]) -> Option<PathBuf> {
         for e in std::fs::read_dir(dir).ok()?.flatten() {
             let p = e.path();
-            if p.is_file() && is_esptool(&e.file_name().to_string_lossy()) {
+            if p.is_file() && names.contains(&e.file_name().to_string_lossy().as_ref()) {
                 return Some(p);
             }
         }
         if depth > 0 {
             for e in std::fs::read_dir(dir).ok()?.flatten() {
                 if e.path().is_dir() {
-                    if let Some(f) = walk(&e.path(), depth - 1) {
+                    if let Some(f) = walk(&e.path(), depth - 1, names) {
                         return Some(f);
                     }
                 }
@@ -56,15 +57,12 @@ pub fn find_esptool(dirs: &[PathBuf]) -> Option<PathBuf> {
         }
         None
     }
-    dirs.iter()
-        .filter_map(|d| walk(d, 3))
-        .next()
-        .or_else(|| {
-            let path = std::env::var_os("PATH")?;
-            std::env::split_paths(&path)
-                .flat_map(|d| ["esptool.exe", "esptool", "esptool.py"].map(|n| d.join(n)))
-                .find(|p| p.is_file())
-        })
+    dirs.iter().filter_map(|d| walk(d, 3, names)).next().or_else(|| {
+        let path = std::env::var_os("PATH")?;
+        std::env::split_paths(&path)
+            .flat_map(|d| names.iter().map(move |n| d.join(n)).collect::<Vec<_>>())
+            .find(|p| p.is_file())
+    })
 }
 
 pub struct SerialFlash<'a> {
@@ -97,14 +95,77 @@ pub fn flash_serial(
         cmd.arg("--erase-all");
     }
     cmd.arg(format!("0x{addr:x}")).arg(job.file);
+    on_event(FlashEvent::Log(format!("esptool: {}", job.esptool.display())));
+    run_tool(cmd, "esptool", on_event, cancel, &|line| {
+        // Keep the progress redraws out of the log, they only repeat the bar.
+        let noisy = line.contains("Writing at") && !line.contains("100.0%");
+        (parse_percent(line), !noisy)
+    })
+}
+
+// ------------------------------------------------------------------ avrdude (Arduino AVR)
+
+/// Finds avrdude in the given folders (up to 3 levels deep), then on PATH.
+pub fn find_avrdude(dirs: &[PathBuf]) -> Option<PathBuf> {
+    find_named(&["avrdude", "avrdude.exe"], dirs)
+}
+
+pub struct AvrFlash<'a> {
+    pub avrdude: &'a Path,
+    /// `-p`, for example `atmega328p`
+    pub mcu: &'a str,
+    /// `-c`, for example `arduino`, `wiring`, `stk500v1`
+    pub programmer: &'a str,
+    pub port: &'a str,
+    pub baud: u32,
+    /// Compiled sketch in Intel HEX format.
+    pub file: &'a Path,
+}
+
+pub fn flash_avr(job: &AvrFlash, on_event: &mut dyn FnMut(FlashEvent), cancel: &AtomicBool) -> Result<(), String> {
+    let mut cmd = Command::new(job.avrdude);
+    // avrdude.exe finds avrdude.conf next to itself; pass it explicitly when we can.
+    if let Some(conf) = job.avrdude.parent().map(|d| d.join("avrdude.conf")).filter(|c| c.is_file()) {
+        cmd.arg("-C").arg(conf);
+    }
+    cmd.args(["-p", job.mcu, "-c", job.programmer, "-P", job.port, "-b"])
+        .arg(job.baud.to_string())
+        // -D: no chip erase, as the Arduino bootloader expects.
+        .arg("-D")
+        .arg("-U")
+        .arg(format!("flash:w:{}:i", job.file.display()));
+    on_event(FlashEvent::Log(format!("avrdude: {}", job.avrdude.display())));
+    // avrdude shows two bars: Writing, then Reading (verify). Map them to 0-50% and 50-100%.
+    run_tool(cmd, "avrdude", on_event, cancel, &|line| {
+        let pct = parse_percent(line).map(|p| {
+            let t = line.trim_start();
+            if t.starts_with("Reading") {
+                50.0 + p / 2.0
+            } else {
+                p / 2.0
+            }
+        });
+        let is_bar = line.contains('#') && line.contains('%');
+        (pct, !is_bar || line.contains("100%"))
+    })
+}
+
+/// Runs an external flashing tool, streaming its output. `classify` returns the
+/// progress (if the line has one) and whether the line belongs in the log.
+fn run_tool(
+    mut cmd: Command,
+    name: &str,
+    on_event: &mut dyn FnMut(FlashEvent),
+    cancel: &AtomicBool,
+    classify: &dyn Fn(&str) -> (Option<f32>, bool),
+) -> Result<(), String> {
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).stdin(Stdio::null());
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
         cmd.creation_flags(0x0800_0000); // no console window
     }
-    on_event(FlashEvent::Log(format!("esptool: {}", job.esptool.display())));
-    let mut child = cmd.spawn().map_err(|e| format!("Cannot start esptool: {e}"))?;
+    let mut child = cmd.spawn().map_err(|e| format!("Cannot start {name}: {e}"))?;
 
     let (tx, rx) = mpsc::channel::<String>();
     let mut readers = Vec::new();
@@ -117,7 +178,7 @@ pub fn flash_serial(
     {
         let tx = tx.clone();
         readers.push(thread::spawn(move || {
-            // esptool redraws its progress line with \r, so split on both \r and \n.
+            // Progress bars are redrawn with \r, so split on both \r and \n.
             let mut cur = Vec::new();
             for b in stream.bytes().map_while(Result::ok) {
                 if b == b'\r' || b == b'\n' {
@@ -145,11 +206,11 @@ pub fn flash_serial(
         }
         match rx.recv_timeout(Duration::from_millis(100)) {
             Ok(line) => {
-                if let Some(p) = parse_percent(&line) {
+                let (pct, log) = classify(&line);
+                if let Some(p) = pct {
                     on_event(FlashEvent::Progress(p));
                 }
-                // Keep progress redraws out of the log, they only repeat the bar.
-                if !line.contains("Writing at") || line.contains("100.0%") {
+                if log {
                     on_event(FlashEvent::Log(line.clone()));
                 }
                 tail.push(line);
@@ -170,7 +231,7 @@ pub fn flash_serial(
         Ok(())
     } else {
         let hint = tail.iter().rev().find(|l| !l.trim().is_empty()).cloned().unwrap_or_default();
-        Err(format!("esptool failed ({status}). {hint}"))
+        Err(format!("{name} failed ({status}). {hint}"))
     }
 }
 
@@ -488,5 +549,43 @@ mod tests {
         std::fs::create_dir(&nested).unwrap();
         std::fs::write(nested.join("esptool.exe"), b"x").unwrap();
         assert_eq!(find_esptool(&[dir.path().to_path_buf()]), Some(nested.join("esptool.exe")));
+    }
+
+    #[test]
+    fn avrdude_progress_maps_write_and_verify() {
+        // handled through flash_avr below
+        assert_eq!(parse_percent("Writing | ################################################## | 100% 0.98s"), Some(100.0));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn avr_flash_builds_command_and_maps_progress() {
+        let dir = tempfile::tempdir().unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        let tool = dir.path().join("avrdude");
+        std::fs::write(
+            &tool,
+            "#!/bin/sh\nprintf 'Writing | ###     | 50%% 0.5s\\rWriting | ######## | 100%% 1.0s\\rReading | ####    | 50%% 0.2s\\r' >&2\necho \"args: $@\" >&2\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::write(dir.path().join("avrdude.conf"), "").unwrap();
+        let hex = dir.path().join("sketch.hex");
+        std::fs::write(&hex, ":00000001FF\n").unwrap();
+        let (mut progress, mut logs) = (Vec::new(), Vec::new());
+        let r = flash_avr(
+            &AvrFlash { avrdude: &tool, mcu: "atmega328p", programmer: "arduino", port: "COM3", baud: 115200, file: &hex },
+            &mut |e| match e {
+                FlashEvent::Progress(p) => progress.push(p),
+                FlashEvent::Log(l) => logs.push(l),
+            },
+            &AtomicBool::new(false),
+        );
+        assert_eq!(r, Ok(()));
+        assert!(progress.contains(&25.0) && progress.contains(&50.0) && progress.contains(&75.0), "{progress:?}");
+        let args = logs.iter().find(|l| l.starts_with("args:")).unwrap();
+        for want in ["-p atmega328p", "-c arduino", "-P COM3", "-b 115200", "-D", "flash:w:", ":i", "avrdude.conf"] {
+            assert!(args.contains(want), "missing {want} in {args}");
+        }
     }
 }

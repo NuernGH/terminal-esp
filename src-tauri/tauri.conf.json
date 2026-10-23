@@ -37,7 +37,8 @@
       "icons/icon.ico"
     ],
     "resources": [
-      "resources/esptool/**/*"
+      "resources/esptool/**/*",
+      "resources/avrdude/**/*"
     ]
   }
 }

@@ -42,7 +42,7 @@ const S = {
 
 // ------------------------------------------------------------------ display settings
 // Colours for incoming/outgoing text and the decoded view. null = follow the theme.
-const DISPLAY_DEFAULTS = { rx: null, tx: null, echo: true, arrow: true, ts: true, fmt: 'hex', split: 'h' };
+const DISPLAY_DEFAULTS = { rx: null, tx: null, echo: true, arrow: true, ts: true, fmt: 'hex', split: 'h', swap: false, ratio: 0.5 };
 let D = { ...DISPLAY_DEFAULTS, ...store.get('display', {}) };
 const cssVar = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
 const rxColour = () => D.rx || cssVar('--termfg');
@@ -76,7 +76,7 @@ function persist() {
   if (popId) return;
   store.set(
     'sessions',
-    [...S.sessions.values()].map(({ id, name, config, lineEnd, autoReconnect, decode }) => ({ id, name, config, lineEnd, autoReconnect, decode })),
+    [...S.sessions.values()].map(({ id, name, config, lineEnd, autoReconnect, view }) => ({ id, name, config, lineEnd, autoReconnect, view })),
   );
 }
 
@@ -108,7 +108,8 @@ function addSession(info) {
     config: info.config,
     lineEnd: info.lineEnd || 'CRLF',
     autoReconnect: info.autoReconnect ?? info.auto_reconnect ?? true,
-    decode: !!info.decode,
+    view: info.view ?? (info.decode ? 'split' : 'raw'),
+    decode: (info.view ?? (info.decode ? 'split' : 'raw')) !== 'raw',
     rec: [],
     state: info.state || 'off',
     rx: info.rx || 0,
@@ -132,13 +133,16 @@ function addSession(info) {
   s.pane.className = 'pane';
   s.pane.dataset.id = s.id;
   s.pane.innerHTML = `<header></header><div class="split">
-    <div class="col rawcol"><div class="subhdr"><b>Raw</b></div><div class="slot"></div></div>
-    <div class="col deccol"><div class="subhdr"><b>Decoded</b><select class="decfmt" aria-label="Decode as">${FORMATS.map(([v, l]) => `<option value="${v}">${l}</option>`).join('')}</select><button type="button" class="btn ghost sm decclear">Clear</button></div><div class="dec" tabindex="0"></div></div>
+    <div class="col rawcol"><div class="subhdr"><b>Raw</b><button type="button" class="swapbtn" title="Swap raw and decoded" aria-label="Swap raw and decoded">⇄</button></div><div class="slot"></div></div>
+    <div class="divider" role="separator" title="Drag to resize, double-click to reset"></div>
+    <div class="col deccol"><div class="subhdr"><b>Decoded</b><button type="button" class="swapbtn" title="Swap raw and decoded" aria-label="Swap raw and decoded">⇄</button><select class="decfmt" aria-label="Decode as">${FORMATS.map(([v, l]) => `<option value="${v}">${l}</option>`).join('')}</select><button type="button" class="btn ghost sm decclear">Clear</button></div><div class="dec" tabindex="0"></div></div>
   </div>`;
   s.slot = $('.slot', s.pane);
   s.dec = $('.dec', s.pane);
   $('.decfmt', s.pane).value = D.fmt;
-  s.pane.classList.toggle('decoding', s.decode);
+  s.pane.classList.add('view-' + s.view);
+  s.pane.classList.toggle('swap', D.swap);
+  s.pane.style.setProperty('--decw', D.ratio * 100 + '%');
   s.pane.classList.toggle('split-v', D.split === 'v');
   $('#panes').append(s.pane);
   s.term.open(s.slot);
@@ -235,10 +239,12 @@ function addRecord(s, dir, bytes) {
   if (s.decode) paintRecord(s, r);
 }
 
-function setDecode(s, on) {
-  s.decode = on;
-  s.pane.classList.toggle('decoding', on);
-  if (on) renderAllRecords(s);
+function setView(s, view) {
+  s.view = view;
+  s.decode = view !== 'raw';
+  s.pane.classList.remove('view-raw', 'view-split', 'view-decoded');
+  s.pane.classList.add('view-' + view);
+  if (s.decode) renderAllRecords(s);
   persist();
   renderToolbar();
   requestAnimationFrame(fitAll);
@@ -265,6 +271,8 @@ function applyDisplay() {
   for (const s of S.sessions.values()) {
     s.term.options.theme = termTheme();
     s.pane.classList.toggle('split-v', D.split === 'v');
+    s.pane.classList.toggle('swap', D.swap);
+    s.pane.style.setProperty('--decw', D.ratio * 100 + '%');
     $('.decfmt', s.pane).value = D.fmt;
     if (s.decode) renderAllRecords(s);
   }
@@ -401,7 +409,8 @@ function mountShell() {
       <button class="btn ghost sm" id="t-settings">Port settings…</button>
       <button class="btn ghost sm" id="t-rename">Rename</button>
       <button class="btn ghost sm only-multi" id="t-win"${multi}>New window</button>
-      <button class="btn ghost sm" id="t-dec" title="Split the terminal into a raw part and a decoded part"></button>
+      <div class="seg" id="t-view" title="Raw terminal, raw and decoded side by side, or decoded only"><button data-v="raw">Raw</button><button data-v="split">Split</button><button data-v="decoded">Decoded</button></div>
+      <button class="btn ghost sm" id="t-swap" title="Swap the raw and decoded sections">⇄ Swap</button>
       <button class="btn ghost sm" id="t-disp" title="Colours and decoding options">Display…</button>
       <button class="btn ghost sm" id="t-clear">Clear</button>
       <button class="btn sm" id="t-flash">Flash .bin…</button>
@@ -421,7 +430,7 @@ function renderTabs() {
   $('#tabs').innerHTML =
     [...S.sessions.values()]
       .map(
-        (s) => `<div class="tab" role="tab" tabindex="0" draggable="true" data-id="${s.id}" aria-selected="${s.id === S.active}">
+        (s) => `<div class="tab" role="tab" tabindex="0" data-id="${s.id}" aria-selected="${s.id === S.active}">
           <span class="st ${stateClass(s)}" data-tog title="${stateTip(s)}"></span><span class="nm" data-rename>${esc(s.name)}</span>${leds(s)}
           <span class="x" data-remove title="Remove this connection">${S.pendingRemove === s.id ? 'Remove?' : '✕'}</span></div>`,
       )
@@ -432,7 +441,7 @@ function renderRail() {
   $('#rail').innerHTML =
     [...S.sessions.values()]
       .map(
-        (s) => `<div class="card" role="button" tabindex="0" draggable="true" data-id="${s.id}" aria-selected="${s.id === S.active}">
+        (s) => `<div class="card" role="button" tabindex="0" data-id="${s.id}" aria-selected="${s.id === S.active}">
           <span class="r1"><span class="st ${stateClass(s)}" data-tog title="${stateTip(s)}"></span><span data-rename>${esc(s.name)}</span>
           <span class="x" data-remove style="margin-left:auto;opacity:.6;cursor:pointer">${S.pendingRemove === s.id ? 'Remove?' : '✕'}</span></span>
           <span class="r2">${typeOf(s.config)} · ${esc(addrOf(s.config))}</span><span class="r2" style="margin-left:-7px">${leds(s, true)}</span></div>`,
@@ -443,7 +452,6 @@ function renderRail() {
 function renderPaneHeaders() {
   for (const s of S.sessions.values()) {
     $('header', s.pane).innerHTML = `<span class="st ${stateClass(s)}" data-tog title="${stateTip(s)}"></span><span data-rename>${esc(s.name)}</span>${leds(s, true)}<span class="rt">${s.config.kind === 'serial' ? `<span class="chip">${esc(s.config.port)}</span><select class="baud" aria-label="Baud rate" title="Baud rate. Changes apply immediately.">${baudOptions(s.config.baud)}</select>` : `<span class="chip">${esc(addrOf(s.config))}</span>`}</span>`;
-    $('header', s.pane).draggable = S.layout === 'grid';
     s.pane.dataset.id = s.id;
     s.pane.classList.toggle('active', s.id === S.active);
   }
@@ -452,7 +460,8 @@ function renderPaneHeaders() {
 function renderToolbar() {
   const s = cur();
   $$('#lay button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.l === S.layout)));
-  for (const id of ['t-addr', 't-conn', 't-settings', 't-rename', 't-clear', 't-auto', 't-dec']) $('#' + id).hidden = !s;
+  for (const id of ['t-addr', 't-conn', 't-settings', 't-rename', 't-clear', 't-auto', 't-view']) $('#' + id).hidden = !s;
+  $('#t-swap').hidden = !s || s.view !== 'split';
   $('#cols-wrap').hidden = S.layout !== 'grid';
   $('#grid-cols').value = String(store.get('cols', 'auto'));
   const serial = s?.config.kind === 'serial';
@@ -462,9 +471,7 @@ function renderToolbar() {
     const a = $('#t-auto');
     a.textContent = `Reconnect: ${s.autoReconnect ? 'On' : 'Off'}`;
     a.setAttribute('aria-pressed', String(!!s.autoReconnect));
-    const d = $('#t-dec');
-    d.textContent = `Decode: ${s.decode ? 'On' : 'Off'}`;
-    d.setAttribute('aria-pressed', String(!!s.decode));
+    $$('#t-view button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.v === s.view)));
   }
   $('#t-win').hidden = !s || !!popId;
   $('#t-flash').hidden = !!popId;
@@ -554,6 +561,14 @@ function startRename(id, el) {
 const visibleName = (id) => $$(`[data-id="${id}"] [data-rename]`).find((e) => e.offsetParent !== null);
 
 // ------------------------------------------------------------------ connection dialog
+const BOARDS = [
+  { name: 'Arduino Uno', mcu: 'atmega328p', programmer: 'arduino', baud: 115200 },
+  { name: 'Arduino Nano (new bootloader)', mcu: 'atmega328p', programmer: 'arduino', baud: 115200 },
+  { name: 'Arduino Nano (old bootloader)', mcu: 'atmega328p', programmer: 'arduino', baud: 57600 },
+  { name: 'Pro Mini / Duemilanove (16 MHz)', mcu: 'atmega328p', programmer: 'arduino', baud: 57600 },
+  { name: 'Arduino Mega 2560', mcu: 'atmega2560', programmer: 'wiring', baud: 115200 },
+  { name: 'Custom AVR board', mcu: '', programmer: 'arduino', baud: 115200 },
+];
 const BAUDS = [9600, 19200, 38400, 57600, 74880, 115200, 230400, 460800, 921600, 1500000];
 const baudOptions = (cur) =>
   [...new Set([...BAUDS, cur])].sort((a, b) => a - b).map((b) => `<option${b === cur ? ' selected' : ''}>${b}</option>`).join('');
@@ -728,6 +743,7 @@ async function openFlashDialog() {
   const sc = s?.config;
   const ports = await call('list_serial_ports').catch(() => []);
   const tool = await call('esptool_path').catch(() => null);
+  const avr = await call('avrdude_path').catch(() => null);
   let method = last.method || (sc && sc.kind !== 'serial' ? 'ota' : 'serial');
   let running = false;
   const ov = document.createElement('div');
@@ -736,9 +752,10 @@ async function openFlashDialog() {
     <h3>Flash firmware${s ? ` to ${esc(s.name)}` : ''}</h3>
     <div class="frm"><label class="full">Firmware file (.bin)
       <span class="row"><input id="f-file" value="${esc(last.file || '')}" placeholder="C:\\firmware\\app.bin" autocomplete="off"><button type="button" class="btn ghost sm" id="f-browse">Browse…</button></span></label></div>
-    <div class="seg two" id="f-method">
-      <button type="button" data-m="serial">Serial cable<small>esptool over COM port</small></button>
-      <button type="button" data-m="ota">WiFi (OTA)<small>Arduino OTA protocol</small></button>
+    <div class="seg" id="f-method">
+      <button type="button" data-m="serial">ESP · cable<small>esptool, COM port</small></button>
+      <button type="button" data-m="ota">ESP · WiFi<small>Arduino OTA</small></button>
+      <button type="button" data-m="avr">Arduino<small>AVR boards, .hex</small></button>
     </div>
     <div class="frm" data-for="serial">
       <label class="full">Port<input id="f-port" list="f-ports" value="${esc(sc?.kind === 'serial' ? sc.port : last.port || ports[0]?.name || '')}" autocomplete="off"><datalist id="f-ports">${ports.map((p) => `<option value="${esc(p.name)}">${esc(p.description)}</option>`).join('')}</datalist></label>
@@ -746,6 +763,14 @@ async function openFlashDialog() {
       <label>Start address<input id="f-addr" list="f-addrs" value="${esc(last.address || '0x10000')}" autocomplete="off"><datalist id="f-addrs"><option value="0x10000">app image</option><option value="0x0">merged image / ESP8266</option><option value="0x1000">ESP32 bootloader</option></datalist></label>
       <label class="chk full"><input type="checkbox" id="f-erase"> Erase the whole flash first (also wipes saved WiFi settings)</label>
       <p class="hint full">${tool ? 'Uses esptool: ' + esc(tool) : '<span class="err-text">esptool was not found. The installer bundles it; a local build needs esptool on PATH.</span>'}<br>Typical addresses: 0x10000 for an app .bin from Arduino or PlatformIO, 0x0 for a merged image or an ESP8266 firmware.</p>
+    </div>
+    <div class="frm" data-for="avr">
+      <label class="full">Board<select id="f-board">${BOARDS.map((b, i) => `<option value="${i}"${i === (last.board ?? 0) ? ' selected' : ''}>${esc(b.name)}</option>`).join('')}</select></label>
+      <label class="full">Port<input id="f-aport" list="f-ports" value="${esc(sc?.kind === 'serial' ? sc.port : last.aport || ports[0]?.name || '')}" autocomplete="off"></label>
+      <label>Programmer<select id="f-prog">${['arduino', 'wiring', 'stk500v1', 'stk500v2'].map((x) => `<option>${x}</option>`).join('')}</select></label>
+      <label>Chip<input id="f-mcu" autocomplete="off"></label>
+      <label>Speed<select id="f-abaud">${[19200, 57600, 115200, 230400].map((x) => `<option>${x}</option>`).join('')}</select></label>
+      <p class="hint full">${avr ? 'Uses avrdude: ' + esc(avr) : '<span class="err-text">avrdude was not found. The installer bundles it; a local build needs avrdude on PATH.</span>'}<br>Needs a compiled <b>.hex</b> file. In the Arduino IDE use Sketch → Export Compiled Binary, then pick the .hex without “with_bootloader” in its name. A .ino source file has to be compiled first.</p>
     </div>
     <div class="frm" data-for="ota">
       <label>Board address<input id="f-host" value="${esc(sc && sc.kind !== 'serial' ? sc.host : last.host || '')}" placeholder="192.168.1.60" autocomplete="off"></label>
@@ -772,13 +797,22 @@ async function openFlashDialog() {
   };
   setMethod(method);
   $$('#f-method button', ov).forEach((b) => (b.onclick = () => !running && setMethod(b.dataset.m)));
+  const fillBoard = () => {
+    const b = BOARDS[+q('#f-board').value];
+    if (!b.mcu) return; // custom: keep what is typed
+    q('#f-prog').value = b.programmer;
+    q('#f-mcu').value = b.mcu;
+    q('#f-abaud').value = String(b.baud);
+  };
+  q('#f-board').onchange = fillBoard;
+  fillBoard();
   q('#f-close').onclick = () => !running && close();
   ov.addEventListener('keydown', (e) => e.key === 'Escape' && !running && close());
   q('#f-file').focus();
   q('#f-browse').onclick = async () => {
     try {
       const { open } = await import('@tauri-apps/plugin-dialog');
-      const f = await open({ multiple: false, filters: [{ name: 'Firmware', extensions: ['bin'] }, { name: 'All files', extensions: ['*'] }] });
+      const f = await open({ multiple: false, filters: [{ name: 'Firmware', extensions: ['bin', 'hex'] }, { name: 'All files', extensions: ['*'] }] });
       if (f) q('#f-file').value = f;
     } catch {
       q('#f-msg').textContent = 'The file picker is only available in the desktop app. Paste the path instead.';
@@ -824,7 +858,15 @@ async function openFlashDialog() {
     const file = q('#f-file').value.trim().replace(/^"|"$/g, '');
     if (!file) return err('Choose the .bin file to upload.');
     let req;
-    if (method === 'serial') {
+    if (method === 'avr') {
+      const port = q('#f-aport').value.trim();
+      const mcu = q('#f-mcu').value.trim();
+      if (!port) return err('Enter the board’s serial port, for example COM3.');
+      if (!mcu) return err('Enter the chip type, for example atmega328p.');
+      if (!/\.hex$/i.test(file)) return err('Arduino uploads need a compiled .hex file (Sketch → Export Compiled Binary in the Arduino IDE).');
+      req = { method: 'avr', file, port, mcu, programmer: q('#f-prog').value, baud: +q('#f-abaud').value, session_id: sc?.kind === 'serial' && sc.port === port ? s.id : null };
+      store.set('flash', { ...last, method, file, aport: port, board: +q('#f-board').value });
+    } else if (method === 'serial') {
       const port = q('#f-port').value.trim();
       if (!port) return err('Enter the serial port, for example COM5.');
       const address = q('#f-addr').value.trim();
@@ -871,42 +913,99 @@ function moveSession(dragId, targetId, before) {
 }
 
 function wireDragAndDrop() {
-  let dragId = null;
-  const clear = () => $$('.drop-before, .drop-after, .dragging').forEach((el) => el.classList.remove('drop-before', 'drop-after', 'dragging'));
-  const targetOf = (e) => e.target.closest?.('.pane[data-id], .tab[data-id], .card[data-id]');
-  document.addEventListener('dragstart', (e) => {
-    const src = e.target.closest?.('.tab[data-id], .card[data-id], .pane > header');
-    if (!src) return;
-    dragId = idOf(src);
-    e.dataTransfer.effectAllowed = 'move';
-    e.dataTransfer.setData('text/plain', dragId);
-    (src.closest('.pane') ?? src).classList.add('dragging');
-  });
+  // Pointer events instead of HTML5 drag and drop: the webview on Windows can swallow
+  // native drag events, pointer events always work.
+  let st = null;
+  let justDragged = false;
+  const clear = () =>
+    $$('.drop-before, .drop-after, .dragging').forEach((el) => el.classList.remove('drop-before', 'drop-after', 'dragging'));
   const before = (e, t) => {
     const r = t.getBoundingClientRect();
     return t.classList.contains('card') ? e.clientY < r.top + r.height / 2 : e.clientX < r.left + r.width / 2;
   };
-  document.addEventListener('dragover', (e) => {
-    const t = dragId && targetOf(e);
-    if (!t || t.dataset.id === dragId) return;
-    e.preventDefault();
-    e.dataTransfer.dropEffect = 'move';
+  document.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return;
+    const src = e.target.closest?.('.tab[data-id], .card[data-id], .pane > header');
+    if (!src || e.target.closest('select, input, button, .st, [data-remove], .ren')) return;
+    st = { id: idOf(src), src, x0: e.clientX, y0: e.clientY, active: false, target: null, before: true };
+  });
+  document.addEventListener('pointermove', (e) => {
+    if (!st) return;
+    if (!st.active) {
+      if (Math.hypot(e.clientX - st.x0, e.clientY - st.y0) < 6) return;
+      st.active = true;
+      document.body.classList.add('reordering');
+      (st.src.closest('.pane') ?? st.src).classList.add('dragging');
+    }
     $$('.drop-before, .drop-after').forEach((el) => el.classList.remove('drop-before', 'drop-after'));
-    t.classList.add(before(e, t) ? 'drop-before' : 'drop-after');
+    const t = document.elementFromPoint(e.clientX, e.clientY)?.closest('.pane[data-id], .tab[data-id], .card[data-id]');
+    if (t && t.dataset.id !== st.id) {
+      st.target = t.dataset.id;
+      st.before = before(e, t);
+      t.classList.add(st.before ? 'drop-before' : 'drop-after');
+    } else st.target = null;
   });
-  document.addEventListener('drop', (e) => {
-    const t = dragId && targetOf(e);
-    if (!t) return;
+  const end = (apply) => {
+    if (!st) return;
+    const d = st;
+    st = null;
+    document.body.classList.remove('reordering');
+    clear();
+    if (d.active) {
+      justDragged = true;
+      setTimeout(() => (justDragged = false), 0);
+      if (apply && d.target) moveSession(d.id, d.target, d.before);
+    }
+  };
+  document.addEventListener('pointerup', () => end(true));
+  document.addEventListener('pointercancel', () => end(false));
+  // A drag must not also count as a click on the tab or card it started from.
+  document.addEventListener(
+    'click',
+    (e) => {
+      if (justDragged) {
+        e.stopPropagation();
+        e.preventDefault();
+      }
+    },
+    true,
+  );
+}
+
+/** The divider between the raw and decoded sections: drag to resize, double-click to reset. */
+function wireDivider() {
+  let drag = null;
+  document.addEventListener('pointerdown', (e) => {
+    const d = e.target.closest?.('.divider');
+    if (!d) return;
     e.preventDefault();
-    const b = before(e, t);
-    const id = dragId;
-    dragId = null;
-    clear();
-    moveSession(id, t.dataset.id, b);
+    drag = d.closest('.pane');
+    document.body.classList.add('reordering');
   });
-  document.addEventListener('dragend', () => {
-    dragId = null;
-    clear();
+  document.addEventListener('pointermove', (e) => {
+    if (!drag) return;
+    const r = $('.split', drag).getBoundingClientRect();
+    const horizontal = !drag.classList.contains('split-v');
+    const pos = horizontal ? e.clientX : e.clientY;
+    const start = horizontal ? r.left : r.top;
+    const size = horizontal ? r.width : r.height;
+    // Fraction taken by the decoded section, which sits at the end unless swapped.
+    const frac = D.swap ? (pos - start) / size : 1 - (pos - start) / size;
+    D.ratio = Math.min(0.85, Math.max(0.15, frac));
+    S.sessions.forEach((x) => x.pane.style.setProperty('--decw', D.ratio * 100 + '%'));
+  });
+  document.addEventListener('pointerup', () => {
+    if (!drag) return;
+    drag = null;
+    document.body.classList.remove('reordering');
+    store.set('display', D);
+    requestAnimationFrame(fitAll);
+  });
+  document.addEventListener('dblclick', (e) => {
+    if (!e.target.closest?.('.divider')) return;
+    D.ratio = 0.5;
+    store.set('display', D);
+    applyDisplay();
   });
 }
 
@@ -922,10 +1021,11 @@ function openDisplayDialog() {
       <label class="chk full"><input type="checkbox" id="x-echo"> Show commands you send in the terminal, in the TX colour</label>
       <label class="chk full"><input type="checkbox" id="x-arrow"> Mark sent lines with →</label>
       <label>Decode as<select id="x-fmt">${FORMATS.map(([v, l]) => `<option value="${v}">${l}</option>`).join('')}</select></label>
-      <label>Split layout<select id="x-split"><option value="h">Raw left, decoded right</option><option value="v">Raw top, decoded bottom</option></select></label>
+      <label>Split layout<select id="x-split"><option value="h">Side by side</option><option value="v">Stacked</option></select></label>
+      <label class="chk full"><input type="checkbox" id="x-swap"> Decoded first (left or top) instead of raw</label>
       <label class="chk full"><input type="checkbox" id="x-ts"> Show timestamps in the decoded view</label>
     </div>
-    <p class="hint">Switch <b>Decode</b> on in the toolbar to split a terminal into a raw part and a decoded part. The decoded part lists every chunk received (RX) and sent (TX). Changes apply right away.</p>
+    <p class="hint">Use the <b>Raw / Split / Decoded</b> switch in the toolbar to show the raw terminal, both, or only the decoded view (drag the divider to resize). The decoded part lists every chunk received (RX) and sent (TX). Changes apply right away.</p>
     <div class="acts"><button type="button" class="btn ghost" id="x-reset">Reset all</button><button type="button" class="btn" id="x-close">Done</button></div>
   </form>`;
   document.body.append(ov);
@@ -937,6 +1037,7 @@ function openDisplayDialog() {
     q('#x-arrow').checked = D.arrow;
     q('#x-fmt').value = D.fmt;
     q('#x-split').value = D.split;
+    q('#x-swap').checked = D.swap;
     q('#x-ts').checked = D.ts;
   };
   const save = () => {
@@ -950,6 +1051,7 @@ function openDisplayDialog() {
   q('#x-arrow').onchange = (e) => ((D.arrow = e.target.checked), save());
   q('#x-fmt').onchange = (e) => ((D.fmt = e.target.value), save());
   q('#x-split').onchange = (e) => ((D.split = e.target.value), save());
+  q('#x-swap').onchange = (e) => ((D.swap = e.target.checked), save());
   q('#x-ts').onchange = (e) => ((D.ts = e.target.checked), save());
   $$('[data-reset]', ov).forEach((b) => (b.onclick = () => ((D[b.dataset.reset] = null), save(), fill())));
   q('#x-reset').onclick = () => ((D = { ...DISPLAY_DEFAULTS }), save(), fill());
@@ -1024,7 +1126,15 @@ function wire() {
     renderAll();
   };
   wireDragAndDrop();
-  $('#t-dec').onclick = () => cur() && setDecode(cur(), !cur().decode);
+  $$('#t-view button').forEach((b) => (b.onclick = () => cur() && setView(cur(), b.dataset.v)));
+  const swap = () => {
+    D.swap = !D.swap;
+    store.set('display', D);
+    applyDisplay();
+  };
+  $('#t-swap').onclick = swap;
+  document.addEventListener('click', (e) => e.target.closest?.('.swapbtn') && swap());
+  wireDivider();
   $('#t-disp').onclick = openDisplayDialog;
   document.addEventListener('change', (e) => {
     const sel = e.target.closest?.('select.decfmt');

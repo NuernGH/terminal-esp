@@ -16,12 +16,13 @@ backend) and xterm.js.
 - Layouts: Tabs, Rail, Grid. Drag grid blocks (by their header), tabs or rail cards to reorder them; the Grid layout also has a column count.
 - Baud rate dropdown on every serial session: changes apply immediately, without reconnecting.
 - Auto-reconnect (per session, on by default): if the connection drops, or the board is not there yet, the app keeps retrying every 2 seconds until you click the status dot. Any session can pop out into its own window.
+- **Arduino upload** (Flash dialog, Arduino tab): AVR boards (Uno, Nano, Pro Mini, Mega, custom) via the bundled avrdude. Needs a compiled `.hex` (Arduino IDE: Sketch → Export Compiled Binary); `.ino` sources are not compiled by this app.
 - **Flash .bin** (toolbar button): over a serial cable with the bundled esptool (any ESP chip,
   chosen start address, optional full erase), or over WiFi with the Arduino OTA protocol
   (ESP32 port 3232, ESP8266 port 8266, optional password, firmware or filesystem image).
   A serial upload releases the COM port and reconnects the session afterwards.
 - Traffic colours: incoming text uses the RX colour, commands you send show on their own line in the TX colour (optional → marker). Both colours are yours to change under **Display…**.
-- **Decode** (per session, toolbar): splits the terminal into a raw part and a decoded part (side by side or stacked). The decoded part lists every received (RX) and sent (TX) chunk with a timestamp, as Hex, ASCII (escaped), Decimal, Binary or Hex + ASCII dump.
+- **View: Raw / Split / Decoded** (per session, toolbar): raw terminal, raw and decoded together (side by side or stacked, draggable divider, ⇄ swaps which comes first), or decoded only. The decoded part lists every received (RX) and sent (TX) chunk with a timestamp, as Hex, ASCII (escaped), Decimal, Binary or Hex + ASCII dump.
 - Typing in the terminal sends keystrokes (Enter uses the session's line ending); there is also a
   send box with history (Up/Down).
 

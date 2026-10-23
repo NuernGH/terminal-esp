@@ -20,6 +20,7 @@ struct FlashJob(Mutex<Option<Arc<AtomicBool>>>);
 enum FlashRequest {
     Serial { file: String, port: String, baud: u32, address: String, erase: bool, session_id: Option<String> },
     Ota { file: String, host: String, port: u16, password: String, filesystem: bool, session_id: Option<String> },
+    Avr { file: String, port: String, mcu: String, programmer: String, baud: u32, session_id: Option<String> },
 }
 
 /// Data goes to the UI as base64 so binary output survives JSON.
@@ -130,6 +131,12 @@ fn esptool_path(app: AppHandle) -> Option<String> {
     flash::find_esptool(&esptool_dirs(&app)).map(|p| p.display().to_string())
 }
 
+/// Path of the avrdude used for Arduino AVR uploads, if one can be found.
+#[tauri::command]
+fn avrdude_path(app: AppHandle) -> Option<String> {
+    flash::find_avrdude(&esptool_dirs(&app)).map(|p| p.display().to_string())
+}
+
 #[tauri::command]
 fn flash_cancel(job: State<FlashJob>) {
     if let Some(c) = job.0.lock().unwrap().as_ref() {
@@ -153,7 +160,7 @@ fn flash_start(app: AppHandle, job: State<FlashJob>, req: FlashRequest) -> Resul
         };
         let core = app.state::<Core>();
         let (is_serial, session_id) = match &req {
-            FlashRequest::Serial { session_id, .. } => (true, session_id.clone()),
+            FlashRequest::Serial { session_id, .. } | FlashRequest::Avr { session_id, .. } => (true, session_id.clone()),
             FlashRequest::Ota { session_id, .. } => (false, session_id.clone()),
         };
         // A serial upload needs the COM port, so release it first.
@@ -165,7 +172,7 @@ fn flash_start(app: AppHandle, job: State<FlashJob>, req: FlashRequest) -> Resul
         if is_serial && was_connected {
             if let Some(id) = &session_id {
                 let _ = core.0.disconnect(id);
-                std::thread::sleep(Duration::from_millis(300));
+                core.0.wait_released(id, Duration::from_secs(3));
             }
         }
         let mut on_event = |e: FlashEvent| match e {
@@ -182,6 +189,21 @@ fn flash_start(app: AppHandle, job: State<FlashJob>, req: FlashRequest) -> Resul
                         None => Err("esptool was not found. The installer bundles it; for a local build put esptool.exe in src-tauri/resources/esptool or on PATH.".to_string()),
                         Some(tool) => flash::flash_serial(
                             &flash::SerialFlash { esptool: &tool, port, baud: *baud, address, file: path, erase_all: *erase },
+                            &mut on_event,
+                            &cancel,
+                        ),
+                    }
+                }
+            }
+            FlashRequest::Avr { file, port, mcu, programmer, baud, .. } => {
+                let path = std::path::Path::new(file);
+                if !path.is_file() {
+                    Err(format!("File not found: {file}"))
+                } else {
+                    match flash::find_avrdude(&esptool_dirs(&app)) {
+                        None => Err("avrdude was not found. The installer bundles it; for a local build put avrdude.exe (and avrdude.conf) in src-tauri/resources/avrdude or on PATH.".to_string()),
+                        Some(tool) => flash::flash_avr(
+                            &flash::AvrFlash { avrdude: &tool, mcu, programmer, port, baud: *baud, file: path },
                             &mut on_event,
                             &cancel,
                         ),
@@ -240,6 +262,7 @@ fn main() {
             scan_network,
             open_window,
             esptool_path,
+            avrdude_path,
             flash_start,
             flash_cancel,
         ])
