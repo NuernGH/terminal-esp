@@ -52,3 +52,18 @@ jobs:
         with:
           name: esp-terminal-windows
           path: target/release/bundle/nsis/*.exe
+      - name: Make the portable zip
+        shell: pwsh
+        run: |
+          $v = "0.1.${{ github.run_number }}"
+          $dir = "portable/ESP-Terminal-$v-portable"
+          New-Item -ItemType Directory -Force $dir | Out-Null
+          Copy-Item target/release/esp-terminal.exe "$dir/ESP Terminal.exe"
+          Copy-Item src-tauri/resources/esptool "$dir/esptool" -Recurse
+          Copy-Item src-tauri/resources/avrdude "$dir/avrdude" -Recurse
+          "Unzip anywhere and run ESP Terminal.exe. No installation needed.`r`nNeeds the Microsoft WebView2 runtime (included with Windows 10 and 11)." | Set-Content "$dir/README.txt"
+          Compress-Archive -Path "$dir" -DestinationPath "portable/ESP-Terminal-$v-portable.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: esp-terminal-windows-portable
+          path: portable/*.zip

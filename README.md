@@ -55,3 +55,7 @@ Pushing to GitHub also builds the installer in Actions (`.github/workflows/build
 - `crates/core`: connection engine (no GUI). `cargo test -p esp_core` runs its tests.
 - `src-tauri`: the Tauri shell exposing the engine as commands and events.
 - `src`: the UI. In a plain browser (`npm run dev`) a simulator replaces the backend, which is handy for UI work.
+
+## Portable version
+
+Every build also makes `ESP-Terminal-<version>-portable.zip` (Actions artifact `esp-terminal-windows-portable`): unzip anywhere and run `ESP Terminal.exe`, no installation. esptool and avrdude are included.
