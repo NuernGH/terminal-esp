@@ -20,6 +20,8 @@ backend) and xterm.js.
   chosen start address, optional full erase), or over WiFi with the Arduino OTA protocol
   (ESP32 port 3232, ESP8266 port 8266, optional password, firmware or filesystem image).
   A serial upload releases the COM port and reconnects the session afterwards.
+- Traffic colours: incoming text uses the RX colour, commands you send show on their own line in the TX colour (optional → marker). Both colours are yours to change under **Display…**.
+- **Decode** (per session, toolbar): splits the terminal into a raw part and a decoded part (side by side or stacked). The decoded part lists every received (RX) and sent (TX) chunk with a timestamp, as Hex, ASCII (escaped), Decimal, Binary or Hex + ASCII dump.
 - Typing in the terminal sends keystrokes (Enter uses the session's line ending); there is also a
   send box with history (Up/Down).
 

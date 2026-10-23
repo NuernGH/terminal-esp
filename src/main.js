@@ -3,6 +3,7 @@ import './style.css';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { call, onSession, onFlash, b64ToBytes, inTauri } from './api.js';
+import { FORMATS, formatBytes, hexToRgb } from './decode.js';
 
 const params = new URLSearchParams(location.search);
 const popId = params.get('session');
@@ -39,6 +40,14 @@ const S = {
   pendingRemove: null,
 };
 
+// ------------------------------------------------------------------ display settings
+// Colours for incoming/outgoing text and the decoded view. null = follow the theme.
+const DISPLAY_DEFAULTS = { rx: null, tx: null, echo: true, arrow: true, ts: true, fmt: 'hex', split: 'h' };
+let D = { ...DISPLAY_DEFAULTS, ...store.get('display', {}) };
+const cssVar = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const rxColour = () => D.rx || cssVar('--termfg');
+const txColour = () => D.tx || cssVar('--cyan');
+
 // ------------------------------------------------------------------ helpers
 const get = (id) => S.sessions.get(id);
 const cur = () => get(S.active);
@@ -67,7 +76,7 @@ function persist() {
   if (popId) return;
   store.set(
     'sessions',
-    [...S.sessions.values()].map(({ id, name, config, lineEnd, autoReconnect }) => ({ id, name, config, lineEnd, autoReconnect })),
+    [...S.sessions.values()].map(({ id, name, config, lineEnd, autoReconnect, decode }) => ({ id, name, config, lineEnd, autoReconnect, decode })),
   );
 }
 
@@ -84,7 +93,7 @@ function termTheme() {
   return {
     ...PALETTE[scheme.matches ? 'dark' : 'light'],
     background: css.getPropertyValue('--term').trim(),
-    foreground: css.getPropertyValue('--termfg').trim(),
+    foreground: rxColour(),
     cursor: css.getPropertyValue('--accent').trim(),
     selectionBackground: scheme.matches ? '#2b4a73' : '#b3d4ff',
   };
@@ -99,6 +108,8 @@ function addSession(info) {
     config: info.config,
     lineEnd: info.lineEnd || 'CRLF',
     autoReconnect: info.autoReconnect ?? info.auto_reconnect ?? true,
+    decode: !!info.decode,
+    rec: [],
     state: info.state || 'off',
     rx: info.rx || 0,
     tx: info.tx || 0,
@@ -120,8 +131,15 @@ function addSession(info) {
   s.pane = document.createElement('div');
   s.pane.className = 'pane';
   s.pane.dataset.id = s.id;
-  s.pane.innerHTML = '<header></header><div class="slot"></div>';
+  s.pane.innerHTML = `<header></header><div class="split">
+    <div class="col rawcol"><div class="subhdr"><b>Raw</b></div><div class="slot"></div></div>
+    <div class="col deccol"><div class="subhdr"><b>Decoded</b><select class="decfmt" aria-label="Decode as">${FORMATS.map(([v, l]) => `<option value="${v}">${l}</option>`).join('')}</select><button type="button" class="btn ghost sm decclear">Clear</button></div><div class="dec" tabindex="0"></div></div>
+  </div>`;
   s.slot = $('.slot', s.pane);
+  s.dec = $('.dec', s.pane);
+  $('.decfmt', s.pane).value = D.fmt;
+  s.pane.classList.toggle('decoding', s.decode);
+  s.pane.classList.toggle('split-v', D.split === 'v');
   $('#panes').append(s.pane);
   s.term.open(s.slot);
   new ResizeObserver(() => fitOne(s)).observe(s.slot);
@@ -156,13 +174,104 @@ const fitAll = () => S.sessions.forEach(fitOne);
 async function replayBacklog(s) {
   try {
     const b64 = await call('session_backlog', { id: s.id });
-    if (b64) s.term.write(b64ToBytes(b64));
+    if (b64) {
+      const bytes = b64ToBytes(b64);
+      s.term.write(bytes);
+      addRecord(s, 'rx', bytes.slice(-4096));
+    }
   } catch {
     /* no backlog */
   }
 }
 
-async function sendText(s, text) {
+// Decoded view: every chunk that arrives or is sent becomes a record (RX/TX, time, bytes).
+// Chunks of the same direction less than 120 ms apart are merged into one record.
+const MAX_REC = 1500;
+const clock = (t) => {
+  const d = new Date(t);
+  return d.toTimeString().slice(0, 8) + '.' + String(d.getMilliseconds()).padStart(3, '0');
+};
+
+function paintRecord(s, r) {
+  const stick = s.dec.scrollTop + s.dec.clientHeight >= s.dec.scrollHeight - 24;
+  if (!r.el) {
+    r.el = document.createElement('div');
+    r.el.className = `rec ${r.dir}`;
+    r.el.innerHTML = '<span class="ts"></span><span class="tag"></span><span class="len"></span><pre></pre>';
+    $('.tag', r.el).textContent = r.dir.toUpperCase();
+    s.dec.append(r.el);
+  }
+  const ts = $('.ts', r.el);
+  ts.textContent = clock(r.t);
+  ts.hidden = !D.ts;
+  $('.len', r.el).textContent = `${r.bytes.length} B`;
+  $('pre', r.el).textContent = formatBytes(r.bytes, D.fmt);
+  if (stick) s.dec.scrollTop = s.dec.scrollHeight;
+}
+
+function renderAllRecords(s) {
+  s.dec.replaceChildren();
+  for (const r of s.rec) {
+    r.el = null;
+    paintRecord(s, r);
+  }
+}
+
+function addRecord(s, dir, bytes) {
+  const now = Date.now();
+  const last = s.rec[s.rec.length - 1];
+  if (last && last.dir === dir && now - last.last < 120 && last.bytes.length + bytes.length <= 4096) {
+    const merged = new Uint8Array(last.bytes.length + bytes.length);
+    merged.set(last.bytes);
+    merged.set(bytes, last.bytes.length);
+    last.bytes = merged;
+    last.last = now;
+    if (s.decode) paintRecord(s, last);
+    return;
+  }
+  const r = { dir, t: now, last: now, bytes: bytes.slice() };
+  s.rec.push(r);
+  if (s.rec.length > MAX_REC) s.rec.shift().el?.remove();
+  if (s.decode) paintRecord(s, r);
+}
+
+function setDecode(s, on) {
+  s.decode = on;
+  s.pane.classList.toggle('decoding', on);
+  if (on) renderAllRecords(s);
+  persist();
+  renderToolbar();
+  requestAnimationFrame(fitAll);
+}
+
+/** Shows a command you sent, in the TX colour, on its own line. */
+function echoTx(s, text) {
+  if (!D.echo) return;
+  const [r, g, b] = hexToRgb(txColour());
+  const body = text.replace(/[\r\n]+$/, '').replace(/[\x00-\x08\x0b-\x1f\x7f]/g, (c) => `\\x${c.charCodeAt(0).toString(16).padStart(2, '0')}`);
+  // Wait for pending output to be parsed so we know whether the cursor is mid-line.
+  s.term.write('', () => {
+    const lead = s.term.buffer.active.cursorX > 0 ? '\r\n' : '';
+    s.term.write(`${lead}\x1b[38;2;${r};${g};${b}m${D.arrow ? '→ ' : ''}${body}\x1b[39m\r\n`);
+  });
+}
+
+function applyDisplay() {
+  const root = document.documentElement.style;
+  if (D.rx) root.setProperty('--rx', D.rx);
+  else root.removeProperty('--rx');
+  if (D.tx) root.setProperty('--tx', D.tx);
+  else root.removeProperty('--tx');
+  for (const s of S.sessions.values()) {
+    s.term.options.theme = termTheme();
+    s.pane.classList.toggle('split-v', D.split === 'v');
+    $('.decfmt', s.pane).value = D.fmt;
+    if (s.decode) renderAllRecords(s);
+  }
+  requestAnimationFrame(fitAll);
+}
+
+async function sendText(s, text, echo) {
   if (!text) return true;
   if (s.state !== 'on') {
     note('Not connected. Click the status dot to connect.', true);
@@ -170,6 +279,8 @@ async function sendText(s, text) {
   }
   try {
     await call('session_send', { id: s.id, data: text });
+    addRecord(s, 'tx', new TextEncoder().encode(text));
+    if (echo !== undefined) echoTx(s, echo);
     return true;
   } catch (e) {
     note(String(e), true);
@@ -243,7 +354,9 @@ function onEvent(ev) {
   const s = get(ev.id);
   if (!s) return;
   if (ev.type === 'data') {
-    s.term.write(b64ToBytes(ev.data));
+    const bytes = b64ToBytes(ev.data);
+    s.term.write(bytes);
+    addRecord(s, 'rx', bytes);
     s.rxAt = Date.now();
   } else if (ev.type === 'meta') {
     s.name = ev.name;
@@ -288,6 +401,8 @@ function mountShell() {
       <button class="btn ghost sm" id="t-settings">Port settings…</button>
       <button class="btn ghost sm" id="t-rename">Rename</button>
       <button class="btn ghost sm only-multi" id="t-win"${multi}>New window</button>
+      <button class="btn ghost sm" id="t-dec" title="Split the terminal into a raw part and a decoded part"></button>
+      <button class="btn ghost sm" id="t-disp" title="Colours and decoding options">Display…</button>
       <button class="btn ghost sm" id="t-clear">Clear</button>
       <button class="btn sm" id="t-flash">Flash .bin…</button>
     </div>
@@ -337,7 +452,7 @@ function renderPaneHeaders() {
 function renderToolbar() {
   const s = cur();
   $$('#lay button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.l === S.layout)));
-  for (const id of ['t-addr', 't-conn', 't-settings', 't-rename', 't-clear', 't-auto']) $('#' + id).hidden = !s;
+  for (const id of ['t-addr', 't-conn', 't-settings', 't-rename', 't-clear', 't-auto', 't-dec']) $('#' + id).hidden = !s;
   $('#cols-wrap').hidden = S.layout !== 'grid';
   $('#grid-cols').value = String(store.get('cols', 'auto'));
   const serial = s?.config.kind === 'serial';
@@ -347,6 +462,9 @@ function renderToolbar() {
     const a = $('#t-auto');
     a.textContent = `Reconnect: ${s.autoReconnect ? 'On' : 'Off'}`;
     a.setAttribute('aria-pressed', String(!!s.autoReconnect));
+    const d = $('#t-dec');
+    d.textContent = `Decode: ${s.decode ? 'On' : 'Off'}`;
+    d.setAttribute('aria-pressed', String(!!s.decode));
   }
   $('#t-win').hidden = !s || !!popId;
   $('#t-flash').hidden = !!popId;
@@ -792,6 +910,56 @@ function wireDragAndDrop() {
   });
 }
 
+// ------------------------------------------------------------------ display dialog
+function openDisplayDialog() {
+  const ov = document.createElement('div');
+  ov.className = 'ov';
+  ov.innerHTML = `<form class="dlg" role="dialog" aria-label="Display settings">
+    <h3>Display</h3>
+    <div class="frm">
+      <label>Incoming (RX) colour<span class="row"><input type="color" id="x-rx"><button type="button" class="btn ghost sm" data-reset="rx">Default</button></span></label>
+      <label>Outgoing (TX) colour<span class="row"><input type="color" id="x-tx"><button type="button" class="btn ghost sm" data-reset="tx">Default</button></span></label>
+      <label class="chk full"><input type="checkbox" id="x-echo"> Show commands you send in the terminal, in the TX colour</label>
+      <label class="chk full"><input type="checkbox" id="x-arrow"> Mark sent lines with →</label>
+      <label>Decode as<select id="x-fmt">${FORMATS.map(([v, l]) => `<option value="${v}">${l}</option>`).join('')}</select></label>
+      <label>Split layout<select id="x-split"><option value="h">Raw left, decoded right</option><option value="v">Raw top, decoded bottom</option></select></label>
+      <label class="chk full"><input type="checkbox" id="x-ts"> Show timestamps in the decoded view</label>
+    </div>
+    <p class="hint">Switch <b>Decode</b> on in the toolbar to split a terminal into a raw part and a decoded part. The decoded part lists every chunk received (RX) and sent (TX). Changes apply right away.</p>
+    <div class="acts"><button type="button" class="btn ghost" id="x-reset">Reset all</button><button type="button" class="btn" id="x-close">Done</button></div>
+  </form>`;
+  document.body.append(ov);
+  const q = (x) => $(x, ov);
+  const fill = () => {
+    q('#x-rx').value = rxColour();
+    q('#x-tx').value = txColour();
+    q('#x-echo').checked = D.echo;
+    q('#x-arrow').checked = D.arrow;
+    q('#x-fmt').value = D.fmt;
+    q('#x-split').value = D.split;
+    q('#x-ts').checked = D.ts;
+  };
+  const save = () => {
+    store.set('display', D);
+    applyDisplay();
+  };
+  fill();
+  q('#x-rx').oninput = (e) => ((D.rx = e.target.value), save());
+  q('#x-tx').oninput = (e) => ((D.tx = e.target.value), save());
+  q('#x-echo').onchange = (e) => ((D.echo = e.target.checked), save());
+  q('#x-arrow').onchange = (e) => ((D.arrow = e.target.checked), save());
+  q('#x-fmt').onchange = (e) => ((D.fmt = e.target.value), save());
+  q('#x-split').onchange = (e) => ((D.split = e.target.value), save());
+  q('#x-ts').onchange = (e) => ((D.ts = e.target.checked), save());
+  $$('[data-reset]', ov).forEach((b) => (b.onclick = () => ((D[b.dataset.reset] = null), save(), fill())));
+  q('#x-reset').onclick = () => ((D = { ...DISPLAY_DEFAULTS }), save(), fill());
+  const close = () => ov.remove();
+  q('#x-close').onclick = close;
+  ov.addEventListener('mousedown', (e) => e.target === ov && close());
+  ov.addEventListener('keydown', (e) => e.key === 'Escape' && close());
+  q('#x-close').focus();
+}
+
 // ------------------------------------------------------------------ wiring
 function wire() {
   document.addEventListener('click', (e) => {
@@ -856,6 +1024,23 @@ function wire() {
     renderAll();
   };
   wireDragAndDrop();
+  $('#t-dec').onclick = () => cur() && setDecode(cur(), !cur().decode);
+  $('#t-disp').onclick = openDisplayDialog;
+  document.addEventListener('change', (e) => {
+    const sel = e.target.closest?.('select.decfmt');
+    if (!sel) return;
+    D.fmt = sel.value;
+    store.set('display', D);
+    applyDisplay();
+  });
+  document.addEventListener('click', (e) => {
+    const b = e.target.closest?.('.decclear');
+    const s = b && get(idOf(b));
+    if (s) {
+      s.rec = [];
+      s.dec.replaceChildren();
+    }
+  });
   $('#t-conn').onclick = () => toggle(S.active);
   $('#t-settings').onclick = () => openDialog(S.active);
   $('#t-rename').onclick = () => startRename(S.active, visibleName(S.active));
@@ -863,6 +1048,8 @@ function wire() {
     const s = cur();
     if (s) {
       s.term.clear();
+      s.rec = [];
+      s.dec.replaceChildren();
       call('session_clear', { id: s.id }).catch(() => {});
     }
   };
@@ -876,7 +1063,7 @@ function wire() {
     const s = cur();
     if (!s || !input.value) return;
     const text = input.value;
-    if (await sendText(s, text + (EOL[s.lineEnd] ?? '\r\n'))) {
+    if (await sendText(s, text + (EOL[s.lineEnd] ?? '\r\n'), text)) {
       s.history.push(text);
       s.hpos = s.history.length;
       input.value = '';
@@ -921,6 +1108,7 @@ async function start() {
     const s = addSession({ ...info, ...(live ? { state: live.state, rx: live.rx, tx: live.tx } : {}) });
     await replayBacklog(s);
   }
+  applyDisplay();
   const saved = store.get('active', null);
   S.active = popId ? popId : S.sessions.has(saved) ? saved : [...S.sessions.keys()][0] ?? null;
   renderAll();
