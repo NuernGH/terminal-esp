@@ -74,9 +74,15 @@ function note(msg, isErr = false) {
   }, 6000);
 }
 
-function persist() {
+/** Gives the tray menu the current session names. */
+function syncTray() {
   if (popId) return;
   call('tray_set_sessions', { sessions: [...S.sessions.values()].map(({ id, name }) => ({ id, name })) }).catch(() => {});
+}
+
+function persist() {
+  if (popId) return;
+  syncTray();
   store.set(
     'sessions',
     [...S.sessions.values()].map(({ id, name, config, lineEnd, autoReconnect, view, cell, enc, localEcho }) => ({ id, name, config, lineEnd, autoReconnect, view, cell, enc, localEcho })),
@@ -1578,18 +1584,20 @@ function wire() {
     if (m) F.runMacro(m.dataset.m);
   });
   const view = () => {
-    const key = popId ? 'pop' : 'main';
-    const min = store.get('minimal:' + key, false);
-    const noInput = store.get('noinput:' + key, false);
+    // Minimal mode is for pop-out windows only; the main window always shows everything.
+    const min = !!popId && store.get('minimal:pop', false);
+    const noInput = !!popId && store.get('noinput:pop', false);
+    $('#t-min').hidden = !popId;
     document.body.classList.toggle('minimal', min);
     document.body.classList.toggle('hide-input', noInput);
     $('#t-min').textContent = min ? '☰ Full view' : '▭ Minimal';
     $('#t-inp').textContent = noInput ? 'Show input' : 'Hide input';
     $('#t-inp').hidden = !min;
+    $('#t-min').hidden = !popId;
     requestAnimationFrame(fitAll);
   };
-  $('#t-min').onclick = () => (store.set('minimal:' + (popId ? 'pop' : 'main'), !store.get('minimal:' + (popId ? 'pop' : 'main'), false)), view());
-  $('#t-inp').onclick = () => (store.set('noinput:' + (popId ? 'pop' : 'main'), !store.get('noinput:' + (popId ? 'pop' : 'main'), false)), view());
+  $('#t-min').onclick = () => (store.set('minimal:pop', !store.get('minimal:pop', false)), view());
+  $('#t-inp').onclick = () => (store.set('noinput:pop', !store.get('noinput:pop', false)), view());
   view();
   $('#t-top').onclick = async () => {
     const on = $('#t-top').getAttribute('aria-pressed') !== 'true';
@@ -1696,6 +1704,7 @@ async function start() {
   const saved = store.get('active', null);
   S.active = popId ? popId : S.sessions.has(saved) ? saved : [...S.sessions.keys()][0] ?? null;
   renderAll();
+  syncTray();
   const s = cur();
   if (s) requestAnimationFrame(() => (fitOne(s), s.term.focus()));
 }
