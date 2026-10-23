@@ -76,7 +76,7 @@ function persist() {
   if (popId) return;
   store.set(
     'sessions',
-    [...S.sessions.values()].map(({ id, name, config, lineEnd, autoReconnect, view }) => ({ id, name, config, lineEnd, autoReconnect, view })),
+    [...S.sessions.values()].map(({ id, name, config, lineEnd, autoReconnect, view, cell }) => ({ id, name, config, lineEnd, autoReconnect, view, cell })),
   );
 }
 
@@ -109,6 +109,7 @@ function addSession(info) {
     lineEnd: info.lineEnd || 'CRLF',
     autoReconnect: info.autoReconnect ?? info.auto_reconnect ?? true,
     view: info.view ?? (info.decode ? 'split' : 'raw'),
+    cell: info.cell ?? null,
     decode: (info.view ?? (info.decode ? 'split' : 'raw')) !== 'raw',
     rec: [],
     state: info.state || 'off',
@@ -133,9 +134,9 @@ function addSession(info) {
   s.pane.className = 'pane';
   s.pane.dataset.id = s.id;
   s.pane.innerHTML = `<header></header><div class="split">
-    <div class="col rawcol"><div class="subhdr"><b>Raw</b><button type="button" class="swapbtn" title="Swap raw and decoded" aria-label="Swap raw and decoded">⇄</button></div><div class="slot"></div></div>
-    <div class="divider" role="separator" title="Drag to resize, double-click to reset"></div>
-    <div class="col deccol"><div class="subhdr"><b class="dectitle">Decoded</b><button type="button" class="swapbtn" title="Swap raw and decoded" aria-label="Swap raw and decoded">⇄</button><select class="decfmt" aria-label="Decode as">${FORMATS.map(([v, l]) => `<option value="${v}">${l}</option>`).join('')}</select><button type="button" class="btn ghost sm decclear">Clear</button></div><div class="dec-head"><span>time</span><span></span><span></span><span>Raw</span><span class="decfmtname">Decoded</span></div><div class="dec" tabindex="0"></div></div>
+    <div class="col rawcol"><div class="subhdr"><b>Raw</b></div><div class="slot"></div></div>
+    <div class="divider" role="separator" title="Drag to resize, double-click to reset"><button type="button" class="swapbtn" title="Swap raw and decoded" aria-label="Swap raw and decoded">⇄</button></div>
+    <div class="col deccol"><div class="subhdr"><b class="dectitle">Decoded</b><select class="decfmt" aria-label="Decode as">${FORMATS.map(([v, l]) => `<option value="${v}">${l}</option>`).join('')}</select><button type="button" class="btn ghost sm decclear">Clear</button></div><div class="dec-head"><span>time</span><span></span><span></span><span>Raw</span><span class="decfmtname">Decoded</span></div><div class="dec" tabindex="0"></div></div>
   </div>`;
   s.slot = $('.slot', s.pane);
   s.dec = $('.dec', s.pane);
@@ -321,6 +322,7 @@ async function removeSession(id) {
   s.term.dispose();
   s.pane.remove();
   S.sessions.delete(id);
+  clearCells();
   if (S.active === id) S.active = [...S.sessions.keys()].pop() ?? null;
   persist();
   renderAll();
@@ -518,6 +520,10 @@ function renderAll() {
   const cols = store.get('cols', 'auto');
   $('#panes').style.gridTemplateColumns = S.layout === 'grid' && cols !== 'auto' ? `repeat(${cols}, minmax(0, 1fr))` : '';
   applyGridSizes();
+  for (const x of S.sessions.values()) {
+    x.pane.style.gridColumn = S.layout === 'grid' && x.cell ? String(x.cell.c + 1) : '';
+    x.pane.style.gridRow = S.layout === 'grid' && x.cell ? String(x.cell.r + 1) : '';
+  }
   updateTitle();
   requestAnimationFrame(fitAll);
 }
@@ -907,10 +913,49 @@ async function openFlashDialog() {
 // ------------------------------------------------------------------ drag to reorder
 // Works on grid panes (drag the header), tabs and rail cards. The order is shared by
 // all three layouts and remembered.
+/** Forget pinned grid cells so every block flows in order again. */
+function clearCells() {
+  for (const x of S.sessions.values()) x.cell = null;
+  persist();
+}
+
+/** Pins a block to the empty grid cell under the pointer. Returns false when the pointer is not over a cell. */
+function placeInCell(id, clientX, clientY) {
+  const panes = $('#panes');
+  const cs = getComputedStyle(panes);
+  const sizes = (css) => css.split(' ').map(parseFloat).filter((n) => !isNaN(n));
+  const cols = sizes(cs.gridTemplateColumns);
+  const rows = sizes(cs.gridTemplateRows);
+  const r = panes.getBoundingClientRect();
+  const find = (list, pos) => {
+    let acc = 0;
+    for (let i = 0; i < list.length; i++) {
+      acc += list[i];
+      if (pos < acc) return i;
+    }
+    return -1;
+  };
+  const c = find(cols, clientX - r.left + panes.scrollLeft);
+  const row = find(rows, clientY - r.top + panes.scrollTop);
+  if (c < 0 || row < 0) return false;
+  // Pin the other blocks where they sit now so only the dragged one moves.
+  for (const x of S.sessions.values()) {
+    if (x.id === id) continue;
+    const i = find(cols, x.pane.offsetLeft + 2);
+    const j = find(rows, x.pane.offsetTop + 2);
+    x.cell = i >= 0 && j >= 0 ? { c: i, r: j } : null;
+  }
+  get(id).cell = { c, r: row };
+  persist();
+  renderAll();
+  return true;
+}
+
 function moveSession(dragId, targetId, before) {
   if (dragId === targetId || !get(dragId) || !get(targetId)) return;
   const ids = [...S.sessions.keys()].filter((i) => i !== dragId);
   ids.splice(ids.indexOf(targetId) + (before ? 0 : 1), 0, dragId);
+  for (const x of S.sessions.values()) x.cell = null;
   const old = new Map(S.sessions);
   S.sessions.clear();
   for (const i of ids) {
@@ -1027,8 +1072,9 @@ function wireDragAndDrop() {
       const ids = [...S.sessions.keys()].filter((i) => i !== st.id);
       st.target = ids[ids.length - 1] ?? null;
       st.before = false;
+      st.cellAt = [e.clientX, e.clientY];
       $('#panes').classList.add('drop-end');
-    } else st.target = null;
+    } else (st.target = null), (st.cellAt = null);
   });
   const end = (apply) => {
     if (!st) return;
@@ -1039,6 +1085,7 @@ function wireDragAndDrop() {
     if (d.active) {
       justDragged = true;
       setTimeout(() => (justDragged = false), 0);
+      if (apply && d.cellAt && placeInCell(d.id, ...d.cellAt)) return;
       if (apply && d.target) moveSession(d.id, d.target, d.before);
     }
   };
@@ -1062,7 +1109,7 @@ function wireDivider() {
   let drag = null;
   document.addEventListener('pointerdown', (e) => {
     const d = e.target.closest?.('.divider');
-    if (!d) return;
+    if (!d || e.target.closest('.swapbtn')) return;
     e.preventDefault();
     drag = d.closest('.pane');
     document.body.classList.add('reordering');
@@ -1208,6 +1255,7 @@ function wire() {
   };
   $('#grid-cols').onchange = (e) => {
     store.set('cols', e.target.value);
+    clearCells();
     renderAll();
   };
   wireDragAndDrop();

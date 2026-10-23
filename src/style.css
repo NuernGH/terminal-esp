@@ -196,3 +196,7 @@ body.reordering { user-select: none; cursor: grabbing; }
 .gh-b { left: 0; bottom: -3px; height: 7px; width: 100%; cursor: row-resize; }
 .gh:hover { background: var(--accent); opacity: .6; }
 .layout-grid .pane { position: relative; }
+
+.divider { position: relative; }
+.divider .swapbtn { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 6; width: 26px; height: 26px; padding: 0; display: grid; place-items: center; background: var(--panel2); border: 1px solid var(--line); border-radius: 50%; color: var(--mute); cursor: pointer; font-size: 14px; line-height: 1; }
+.divider .swapbtn:hover { color: var(--accent); border-color: var(--accent); }
