@@ -201,3 +201,5 @@ body.reordering { user-select: none; cursor: grabbing; }
 .divider .swapbtn { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 6; width: 26px; height: 26px; padding: 0; display: grid; place-items: center; background: var(--panel2); border: 1px solid var(--line); border-radius: 50%; color: var(--mute); cursor: pointer; font-size: 14px; line-height: 1; }
 .divider .swapbtn:hover { color: var(--accent); border-color: var(--accent); }
 .card .r2 .baud { font: inherit; padding: 0 2px; }
+.status .ver { margin-left: auto; color: var(--mute); }
+.status .msg ~ .ver { margin-left: 12px; }

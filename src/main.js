@@ -498,12 +498,16 @@ function renderToolbar() {
   c.className = 'btn sm' + (s.state === 'on' ? ' ghost' : '');
 }
 
+let VERSION = '';
+if (inTauri) import('@tauri-apps/api/app').then((m) => m.getVersion()).then((v) => ((VERSION = v), renderStatus())).catch(() => {});
+
 function renderStatus() {
   const s = cur();
   const n = S.note;
   $('#status').innerHTML = s
     ? `<span>${s.state === 'on' ? '● Connected' : s.state === 'connecting' ? '◌ Connecting…' : '○ Disconnected'} · ${esc(s.name)}</span>${leds(s, true)}<span>${esc(s.lineEnd)}</span>${n ? `<span class="msg ${n.isErr ? 'err' : ''}">${esc(n.msg)}</span>` : ''}`
     : `<span>Ready</span>${n ? `<span class="msg ${n.isErr ? 'err' : ''}">${esc(n.msg)}</span>` : ''}`;
+  if (VERSION) $('#status').insertAdjacentHTML('beforeend', `<span class="ver" title="App version">v${esc(VERSION)}</span>`);
 }
 
 function updateTitle() {

@@ -17,6 +17,13 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: swatinem/rust-cache@v2
       - run: npm ci
+      - name: Set version from the run number
+        shell: pwsh
+        run: |
+          $v = "0.1.${{ github.run_number }}"
+          $f = "src-tauri/tauri.conf.json"
+          (Get-Content $f -Raw) -replace '"version":\s*"[^"]+"', "`"version`": `"$v`"" | Set-Content $f -NoNewline
+          Select-String '"version"' $f
       - name: Bundle esptool
         shell: pwsh
         env:
