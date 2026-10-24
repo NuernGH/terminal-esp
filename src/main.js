@@ -3,7 +3,7 @@ import './style.css';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { call, onSession, onFlash, b64ToBytes, inTauri } from './api.js';
-import { FORMATS, formatBytes, hexToRgb } from './decode.js';
+import { FORMATS, formatBytes } from './decode.js';
 import * as F from './features.js';
 
 const params = new URLSearchParams(location.search);
@@ -133,6 +133,8 @@ function termTheme() {
     ...PALETTE[isDark() ? 'dark' : 'light'],
     background: css.getPropertyValue('--term').trim(),
     foreground: rxColour(),
+    // Colour 16 carries sent lines, so changing the TX colour also recolours what is already on screen.
+    extendedAnsi: [txColour()],
     cursor: accent,
     selectionBackground: /^#[0-9a-f]{6}$/i.test(accent) ? accent + '55' : isDark() ? '#2b4a73' : '#b3d4ff',
   };
@@ -335,12 +337,11 @@ function setView(s, view) {
 /** Shows a command you sent, in the TX colour, on its own line. */
 function echoTx(s, text) {
   if (!D.echo) return;
-  const [r, g, b] = hexToRgb(txColour());
   const body = text.replace(/[\r\n]+$/, '').replace(/[\x00-\x08\x0b-\x1f\x7f]/g, (c) => `\\x${c.charCodeAt(0).toString(16).padStart(2, '0')}`);
   // Wait for pending output to be parsed so we know whether the cursor is mid-line.
   s.term.write('', () => {
     const lead = s.term.buffer.active.cursorX > 0 ? '\r\n' : '';
-    s.term.write(`${lead}\x1b[38;2;${r};${g};${b}m${D.arrow ? '→ ' : ''}${body}\x1b[39m\r\n`);
+    s.term.write(`${lead}\x1b[38;5;16m${D.arrow ? '→ ' : ''}${body}\x1b[39m\r\n`);
   });
 }
 
