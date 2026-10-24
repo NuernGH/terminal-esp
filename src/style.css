@@ -249,3 +249,7 @@ select.theme { font: 12px var(--ui); padding: 4px 6px; background: var(--panel);
 
 .portrow { grid-column: 1 / -1; display: flex; gap: 8px; align-items: flex-end; }
 .portrow label { flex: 1; }
+
+/* "New connection" has its own colour so it does not look like a selected item */
+#b-new, #b-new2 { background: linear-gradient(135deg, #8b5cf6, #d946ef); color: #fff; box-shadow: 0 1px 6px rgba(139, 92, 246, .45); }
+#b-new:hover, #b-new2:hover { filter: brightness(1.1); }
