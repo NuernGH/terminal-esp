@@ -809,7 +809,6 @@ async function openDialog(editId) {
   const editing = editId ? get(editId) : null;
   const c = editing?.config ?? { kind: 'tcp', host: '', port: 23, protocol: 'telnet' };
   let type = c.kind;
-  const ports = await call('list_serial_ports').catch(() => []);
   const opt = (vals, sel) => vals.map((v) => `<option${String(v) === String(sel) ? ' selected' : ''}>${esc(v)}</option>`).join('');
   const ov = document.createElement('div');
   ov.className = 'ov';
@@ -827,7 +826,8 @@ async function openDialog(editId) {
       <button type="button" data-t="hid">USB HID<small>Raw reports · untested</small></button>
     </div>
     <div class="frm" data-for="serial">
-      <label class="full">Port<input id="d-port" list="d-ports" value="${esc(c.kind === 'serial' ? c.port : ports[0]?.name ?? '')}" autocomplete="off"><datalist id="d-ports">${ports.map((p) => `<option value="${esc(p.name)}">${esc(p.description)}</option>`).join('')}</datalist></label>
+      <div class="full portrow"><label>Port<select id="d-portsel"></select></label><button type="button" class="btn ghost sm" id="d-portref" title="Look for COM ports again">Refresh</button></div>
+      <label class="full" id="d-portman" hidden>Port name<input id="d-port" value="${esc(c.kind === 'serial' ? c.port : '')}" autocomplete="off" placeholder="COM5"></label>
       <label>Baud rate<select id="d-baud">${opt(BAUDS, c.kind === 'serial' ? c.baud : 115200)}</select></label>
       <label>Data bits<select id="d-bits">${opt([8, 7, 6, 5], c.kind === 'serial' ? c.data_bits : 8)}</select></label>
       <label>Parity<select id="d-par">${opt(['none', 'even', 'odd'], c.kind === 'serial' ? c.parity : 'none')}</select></label>
@@ -904,7 +904,29 @@ async function openDialog(editId) {
     q('#d-hint').textContent = HINTS[t];
   };
   setType(type);
-  $$('#d-type button', ov).forEach((b) => (b.onclick = () => setType(b.dataset.t)));
+  const fillPorts = async (keep) => {
+    const list = await call('list_serial_ports').catch(() => []);
+    const cur = keep ?? q('#d-port').value.trim();
+    const sel = q('#d-portsel');
+    const names = list.map((p) => p.name);
+    const opts = list.map((p) => `<option value="${esc(p.name)}">${esc(p.name)}${p.description ? ' — ' + esc(p.description) : ''}</option>`);
+    if (cur && !names.includes(cur)) opts.unshift(`<option value="${esc(cur)}">${esc(cur)} (not detected)</option>`);
+    if (!opts.length) opts.push('<option value="">No COM ports found. Plug in a board and press Refresh</option>');
+    opts.push('<option value="__other">Type a port name…</option>');
+    sel.innerHTML = opts.join('');
+    const pick = cur || names[0] || '';
+    sel.value = pick && [...sel.options].some((o) => o.value === pick) ? pick : sel.options[0].value;
+    if (sel.value && sel.value !== '__other') q('#d-port').value = sel.value;
+  };
+  q('#d-portsel').onchange = (e) => {
+    const other = e.target.value === '__other';
+    q('#d-portman').hidden = !other;
+    if (!other) q('#d-port').value = e.target.value;
+    else q('#d-port').focus();
+  };
+  q('#d-portref').onclick = () => fillPorts();
+  fillPorts(c.kind === 'serial' ? c.port : '');
+  $$('#d-type button', ov).forEach((b) => (b.onclick = () => (setType(b.dataset.t), b.dataset.t === 'serial' && fillPorts())));
   q('#d-cancel').onclick = close;
   ov.addEventListener('mousedown', (e) => e.target === ov && close());
   ov.addEventListener('keydown', (e) => e.key === 'Escape' && close());
