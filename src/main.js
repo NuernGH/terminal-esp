@@ -147,6 +147,12 @@ function applyTheme() {
 }
 scheme.addEventListener('change', applyTheme);
 window.addEventListener('storage', (e) => e.key === 'esp-terminal.theme' && applyTheme());
+// Other windows share these settings: pick up their changes so a stale copy here never overwrites them.
+window.addEventListener('storage', (e) => {
+  if (e.key !== 'esp-terminal.display') return;
+  try { D = { ...DISPLAY_DEFAULTS, ...JSON.parse(e.newValue || '{}') }; } catch { return; }
+  applyDisplay();
+});
 
 // ------------------------------------------------------------------ sessions
 function addSession(info) {
