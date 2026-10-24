@@ -1543,8 +1543,11 @@ function openDisplayDialog() {
     applyDisplay();
   };
   fill();
-  q('#x-rx').oninput = (e) => ((D.rx = e.target.value), save());
-  q('#x-tx').oninput = (e) => ((D.tx = e.target.value), save());
+  // The Windows colour picker does not always fire `input` for typed RGB values, so listen for `change` too.
+  for (const ev of ['input', 'change']) {
+    q('#x-rx').addEventListener(ev, (e) => ((D.rx = e.target.value), save()));
+    q('#x-tx').addEventListener(ev, (e) => ((D.tx = e.target.value), save()));
+  }
   q('#x-echo').onchange = (e) => ((D.echo = e.target.checked), save());
   q('#x-arrow').onchange = (e) => ((D.arrow = e.target.checked), save());
   q('#x-fmt').onchange = (e) => ((D.fmt = e.target.value), save());
