@@ -119,6 +119,16 @@ fn read_file_b64(path: String) -> Result<String, String> {
     std::fs::read(&path).map(|b| STANDARD.encode(b)).map_err(|e| format!("Cannot read {path}: {e}"))
 }
 
+/// Writes (replaces) a file, creating its folder when needed. `data` is base64.
+#[tauri::command]
+fn write_file(path: String, data: String) -> Result<(), String> {
+    let bytes = STANDARD.decode(data).map_err(|e| e.to_string())?;
+    if let Some(dir) = std::path::Path::new(&path).parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    std::fs::write(&path, bytes).map_err(|e| format!("Cannot write {path}: {e}"))
+}
+
 /// Appends data to a log file, creating it (and its folder) when needed.
 #[tauri::command]
 fn append_file(path: String, data: String) -> Result<(), String> {
@@ -410,6 +420,7 @@ fn main() {
             session_set_secret,
             read_file_b64,
             append_file,
+            write_file,
             session_backlog,
             session_clear,
             scan_network,

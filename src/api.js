@@ -135,6 +135,9 @@ function mockCall(cmd, a) {
     }
     case 'read_file_b64':
       return a.path.includes('missing') ? Promise.reject(`Cannot read ${a.path}`) : Promise.resolve(strToB64('line one\nline two\nline three\n'));
+    case 'write_file':
+      (window.__saved ??= []).push([a.path, a.data]);
+      return Promise.resolve();
     case 'append_file':
       (window.__logged ??= []).push([a.path, a.data]);
       return Promise.resolve();

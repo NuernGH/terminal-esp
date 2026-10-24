@@ -594,6 +594,7 @@ function mountShell() {
         <button class="btn ghost sm" id="t-find">Search</button>
         <button class="btn ghost sm" id="t-plot">Plot</button>
         <button class="btn ghost sm" id="t-log"></button>
+        <button class="btn ghost sm" id="t-save">Save…</button>
         <button class="btn ghost sm" id="t-clear">Clear</button>
         <button class="btn sm" id="t-flash">Flash .bin…</button>
       </div></div>
@@ -630,7 +631,8 @@ function mountShell() {
     't-disp': 'Colours of received and sent text, decoding format, timestamps and split direction.',
     't-find': 'Find text in the terminal (Ctrl+F).',
     't-plot': 'Graph numbers found in the incoming text, for example temp=22.4 hum=41.',
-    't-log': 'Save everything received to a file.',
+    't-log': 'Record everything received to a file while connected.',
+    't-save': 'Save what is in the terminal now as .txt, .log with timestamps or .csv.',
     't-clear': 'Clear this terminal. The board is not affected.',
     't-flash': 'Upload firmware: a .bin over USB (esptool) or WiFi (OTA), or a .hex to an Arduino.',
     't-top': 'Keep this window above all other windows.',
@@ -684,7 +686,7 @@ function renderPaneHeaders() {
 function renderToolbar() {
   const s = cur();
   $$('#lay button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.l === S.layout)));
-  for (const id of ['t-addr', 't-conn', 't-settings', 't-rename', 't-clear', 't-auto', 't-view', 't-find', 't-plot', 't-log']) $('#' + id).hidden = !s;
+  for (const id of ['t-addr', 't-conn', 't-settings', 't-rename', 't-clear', 't-auto', 't-view', 't-find', 't-plot', 't-log', 't-save']) $('#' + id).hidden = !s;
   $('#t-swap').hidden = !s || s.view !== 'split';
   $('#cols-wrap').hidden = S.layout !== 'grid';
   $('#grid-cols').value = String(store.get('cols', 'auto'));
@@ -1841,6 +1843,7 @@ function wire() {
     renderToolbar();
   };
   $('#t-log').onclick = () => cur() && F.openLogDialog(cur());
+  $('#t-save').onclick = () => cur() && F.openSaveDialog(cur());
   $('#b-file').onclick = () => F.openSendFileDialog();
   $('#t-disp').onclick = openDisplayDialog;
   $('#t-help').onclick = () => openHelp();

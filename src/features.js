@@ -94,6 +94,20 @@ function plotDigits(s, text) {
   if (vals.length) plotLines(s, vals);
 }
 
+/** Remembers when a plotted value arrived and where it is in the terminal, so a click can find it again. */
+function markPoint(s) {
+  const slot = { t: Date.now(), mk: null };
+  try {
+    s.term.write('', () => {
+      const b = s.term.buffer.active;
+      slot.mk = s.term.registerMarker(b.cursorX === 0 ? -1 : 0) ?? null;
+    });
+  } catch {
+    /* terminal not ready */
+  }
+  return slot;
+}
+
 function plotLines(s, lines) {
   const p = s.plot;
   let any = false;
@@ -103,11 +117,15 @@ function plotLines(s, lines) {
       let ser = p.series.get(name);
       if (!ser) {
         if (p.series.size >= 8) continue;
-        ser = { name, colour: COLOURS[p.series.size % COLOURS.length], pts: [] };
+        ser = { name, colour: COLOURS[p.series.size % COLOURS.length], pts: [], meta: [] };
         p.series.set(name, ser);
       }
       ser.pts.push(value);
-      if (ser.pts.length > MAX_POINTS) ser.pts.shift();
+      ser.meta.push(markPoint(s));
+      if (ser.pts.length > MAX_POINTS) {
+        ser.pts.shift();
+        ser.meta.shift()?.mk?.dispose();
+      }
       any = true;
     }
   }
@@ -116,6 +134,85 @@ function plotLines(s, lines) {
       p.raf = 0;
       drawPlot(s);
     });
+}
+
+function nearestPoint(s, ev) {
+  const p = s.plot;
+  const geo = p?.geo;
+  if (!geo) return null;
+  const rect = p.canvas.getBoundingClientRect();
+  const mx = ev.clientX - rect.left;
+  const my = ev.clientY - rect.top;
+  let best = null;
+  for (const ser of geo.series) {
+    const i = Math.round(geo.n <= 1 ? 0 : ((mx - geo.X0) / (geo.X1 - geo.X0)) * (geo.n - 1)) - (geo.n - ser.pts.length);
+    for (const j of [i - 1, i, i + 1]) {
+      if (j < 0 || j >= ser.pts.length) continue;
+      const x = geo.X0 + (geo.n <= 1 ? 0 : ((j + geo.n - ser.pts.length) / (geo.n - 1)) * (geo.X1 - geo.X0));
+      const d = Math.hypot(x - mx, geo.yOf(ser.pts[j], ser) - my);
+      if (d < 16 && (!best || d < best.d)) best = { ser, i: j, d };
+    }
+  }
+  return best;
+}
+
+function wirePlotPointer(s) {
+  const p = s.plot;
+  const tip = s.plotEl.querySelector('.plot-tip');
+  p.canvas.addEventListener('mousemove', (ev) => {
+    const hit = nearestPoint(s, ev);
+    const prev = p.hover;
+    p.hover = hit && { ser: hit.ser, i: hit.i };
+    p.canvas.style.cursor = hit ? 'pointer' : '';
+    if (!hit) {
+      tip.hidden = true;
+    } else {
+      const m = hit.ser.meta[hit.i];
+      tip.innerHTML = `<b style="color:${hit.ser.colour}">${X.esc(hit.ser.name)}</b> ${hit.ser.pts[hit.i]}<br><small>${stamp(new Date(m.t)).slice(11)} · click to find it in the terminal</small>`;
+      tip.hidden = false;
+      const r = p.canvas.getBoundingClientRect();
+      const host = s.plotEl.getBoundingClientRect();
+      const x = Math.min(ev.clientX - host.left + 12, host.width - tip.offsetWidth - 6);
+      tip.style.left = Math.max(4, x) + 'px';
+      tip.style.top = Math.max(4, ev.clientY - host.top - tip.offsetHeight - 10) + 'px';
+      void r;
+    }
+    if (prev?.i !== p.hover?.i || prev?.ser !== p.hover?.ser) drawPlot(s);
+  });
+  p.canvas.addEventListener('mouseleave', () => {
+    tip.hidden = true;
+    if (p.hover) {
+      p.hover = null;
+      drawPlot(s);
+    }
+  });
+  p.canvas.addEventListener('click', (ev) => {
+    const hit = nearestPoint(s, ev);
+    if (hit) jumpToPoint(s, hit.ser.meta[hit.i]);
+  });
+}
+
+/** Scrolls the terminal (and the decoded list) to where a plotted value came from and highlights it for a moment. */
+function jumpToPoint(s, slot) {
+  if (s.pane.classList.contains('plot-full')) {
+    s.pane.classList.remove('plot-full');
+    s.plotEl.querySelector('[data-p=full]').textContent = 'Plot only';
+    X.fitAll();
+  }
+  const mk = slot.mk;
+  if (mk && !mk.isDisposed && mk.line >= 0) {
+    s.term.scrollToLine(Math.max(0, mk.line - Math.floor(s.term.rows / 2)));
+    const dec = s.term.registerDecoration({ marker: mk, x: 0, width: s.term.cols, height: 1, backgroundColor: '#b8860b', layer: 'top' });
+    if (dec) setTimeout(() => dec.dispose(), 2500);
+  } else {
+    X.note('That line has scrolled out of the terminal history.');
+  }
+  const rec = [...(s.rec || [])].reverse().find((r) => r.t <= slot.t + 50 && r.dir === 'rx' && r.el);
+  if (rec) {
+    rec.el.scrollIntoView({ block: 'center' });
+    rec.el.classList.add('flash');
+    setTimeout(() => rec.el.classList.remove('flash'), 2500);
+  }
 }
 
 export function drawPlot(s) {
@@ -190,6 +287,7 @@ export function drawPlot(s) {
   }
   g.textAlign = 'left';
   g.fillText(`last ${n} samples`, X0, h - 3);
+  p.geo = { X0, X1, n, yOf, series };
   for (const ser of series) {
     g.strokeStyle = ser.colour;
     g.lineWidth = 1.6;
@@ -200,6 +298,19 @@ export function drawPlot(s) {
       else g.lineTo(x, yOf(v, ser));
     });
     g.stroke();
+  }
+  if (p.hover) {
+    const { ser, i } = p.hover;
+    if (p.series.get(ser.name) === ser && i < ser.pts.length) {
+      const x = X0 + (n <= 1 ? 0 : ((i + n - ser.pts.length) / (n - 1)) * (X1 - X0));
+      g.fillStyle = ser.colour;
+      g.beginPath();
+      g.arc(x, yOf(ser.pts[i], ser), 4.5, 0, Math.PI * 2);
+      g.fill();
+      g.strokeStyle = css.getPropertyValue('--fg').trim() || '#fff';
+      g.lineWidth = 1.5;
+      g.stroke();
+    }
   }
   p.legend.innerHTML = series
     .map((ser) => `<span><i style="background:${ser.colour}"></i>${X.esc(ser.name)} <b>${ser.pts[ser.pts.length - 1]}</b></span>`)
@@ -212,11 +323,11 @@ export function togglePlot(s, on = !s.plot) {
     s.plotEl?.remove();
     s.plotEl = null;
     s.plot = null;
-    s.pane.classList.remove('has-plot');
+    s.pane.classList.remove('has-plot', 'plot-full');
   } else {
     const el = document.createElement('div');
     el.className = 'plot';
-    el.innerHTML = `<div class="plot-bar"><b>Plot</b><span class="legend"></span><button type="button" class="btn ghost sm" data-p="scale" title="Scale every series to its own range, useful when values differ a lot">Scale: shared</button><label class="plot-dig" title="Split the incoming digits into values of this many digits (for example 2: 22222222 becomes 22, 22, 22, 22). 0 = off, read normal text"><span>Digits per value</span><input type="number" min="0" max="9" value="0" data-p="digits"></label><button type="button" class="btn ghost sm" data-p="pause">Pause</button><button type="button" class="btn ghost sm" data-p="clear">Clear</button><button type="button" class="btn ghost sm" data-p="close" aria-label="Close plot">✕</button></div><canvas></canvas>`;
+    el.innerHTML = `<div class="plot-bar"><b>Plot</b><span class="legend"></span><button type="button" class="btn ghost sm" data-p="scale" title="Scale every series to its own range, useful when values differ a lot">Scale: shared</button><label class="plot-dig" title="Split the incoming digits into values of this many digits (for example 2: 22222222 becomes 22, 22, 22, 22). 0 = off, read normal text"><span>Digits per value</span><input type="number" min="0" max="9" value="0" data-p="digits"></label><button type="button" class="btn ghost sm" data-p="full" title="Show only the plot, hiding the terminal">Plot only</button><button type="button" class="btn ghost sm" data-p="pause">Pause</button><button type="button" class="btn ghost sm" data-p="clear">Clear</button><button type="button" class="btn ghost sm" data-p="close" aria-label="Close plot">✕</button></div><canvas></canvas><div class="plot-tip" hidden></div>`;
     s.pane.querySelector('.split').after(el);
     s.plotEl = el;
     s.plot = { series: new Map(), carry: '', paused: false, raf: 0, canvas: el.querySelector('canvas'), legend: el.querySelector('.legend') };
@@ -241,6 +352,11 @@ export function togglePlot(s, on = !s.plot) {
         s.plot.series.clear();
         s.plot.legend.innerHTML = '';
         drawPlot(s);
+      } else if (b.dataset.p === 'full') {
+        const on = !s.pane.classList.contains('plot-full');
+        s.pane.classList.toggle('plot-full', on);
+        b.textContent = on ? 'Show terminal' : 'Plot only';
+        requestAnimationFrame(() => { drawPlot(s); X.fitAll(); });
       } else if (b.dataset.p === 'scale') {
         s.plot.each = !s.plot.each;
         b.textContent = s.plot.each ? 'Scale: each' : 'Scale: shared';
@@ -250,6 +366,7 @@ export function togglePlot(s, on = !s.plot) {
         b.textContent = s.plot.paused ? 'Resume' : 'Pause';
       }
     });
+    wirePlotPointer(s);
     new ResizeObserver(() => drawPlot(s)).observe(s.plot.canvas);
     requestAnimationFrame(() => drawPlot(s));
   }
@@ -561,4 +678,94 @@ export async function openSendFileDialog() {
     q('#sf-cancel').textContent = 'Close';
     if (!msg.textContent.startsWith('Stopped')) msg.textContent = cancelled ? `Cancelled after ${sent} bytes.` : `Done. Sent ${sent} bytes.`;
   };
+}
+
+// ------------------------------------------------------------------ save the session to a file
+const bytesToLatin = (u8) => {
+  let out = '';
+  for (let i = 0; i < u8.length; i += 4096) out += String.fromCharCode(...u8.subarray(i, i + 4096));
+  return out;
+};
+const csvCell = (v) => `"${String(v).replace(/"/g, '""')}"`;
+const printable = (u8) => [...u8].map((b) => (b >= 32 && b < 127 ? String.fromCharCode(b) : b === 10 || b === 13 || b === 9 ? ' ' : '.')).join('');
+
+/** Terminal scrollback as plain text, one line per row, wrapped rows joined. */
+function terminalText(s) {
+  const buf = s.term.buffer.active;
+  const lines = [];
+  for (let i = 0; i < buf.length; i++) {
+    const l = buf.getLine(i);
+    if (!l) continue;
+    const t = l.translateToString(true);
+    if (l.isWrapped && lines.length) lines[lines.length - 1] += t;
+    else lines.push(t);
+  }
+  while (lines.length && !lines[lines.length - 1]) lines.pop();
+  return lines.join('\r\n') + '\r\n';
+}
+
+const SAVE_FORMATS = {
+  txt: { label: 'Plain text: what is in the terminal now (.txt)', ext: 'txt', build: (s) => terminalText(s) },
+  log: {
+    label: 'Log with timestamps: every received and sent chunk (.log)',
+    ext: 'log',
+    build: (s) => s.rec.map((r) => `${stamp(new Date(r.t))} ${r.dir.toUpperCase()} ${printable(r.bytes)}`).join('\r\n') + '\r\n',
+  },
+  csv: {
+    label: 'Spreadsheet: time, direction, length, hex, text (.csv)',
+    ext: 'csv',
+    build: (s) =>
+      'time,direction,bytes,hex,text\r\n' +
+      s.rec.map((r) => [stamp(new Date(r.t)), r.dir.toUpperCase(), r.bytes.length, [...r.bytes].map((b) => b.toString(16).padStart(2, '0')).join(' '), printable(r.bytes)].map(csvCell).join(',')).join('\r\n') + '\r\n',
+  },
+};
+
+export async function openSaveDialog(s) {
+  const last = X.store.get('save', { format: 'txt', dir: '' });
+  const safe = s.name.replace(/[^\w.-]+/g, '_');
+  const nameFor = (fmt) => `${last.dir ? last.dir.replace(/[\\/]$/, '') + '\\' : ''}${safe}-${stamp().slice(0, 19).replace(/[: ]/g, '-')}.${SAVE_FORMATS[fmt].ext}`;
+  const ov = document.createElement('div');
+  ov.className = 'ov';
+  ov.innerHTML = `<form class="dlg" role="dialog" aria-label="Save"><h3>Save ${X.esc(s.name)}</h3>
+    <div class="frm"><label class="full">Format<select id="v-fmt">${Object.entries(SAVE_FORMATS).map(([k, v]) => `<option value="${k}"${k === last.format ? ' selected' : ''}>${v.label}</option>`).join('')}</select></label>
+    <label class="full">File<span class="row"><input id="v-path" autocomplete="off"><button type="button" class="btn ghost sm" id="v-browse">Browse…</button></span></label></div>
+    <p class="hint">Saves what is currently held in the terminal (up to 20,000 lines) or in the decoded list (the last ${1500} chunks). To record everything continuously, use Log…</p><p class="err-text" id="v-err" hidden></p>
+    <div class="acts"><button type="button" class="btn ghost" id="v-cancel">Cancel</button><button class="btn">Save</button></div></form>`;
+  document.body.append(ov);
+  const q = (x) => ov.querySelector(x);
+  const close = () => ov.remove();
+  q('#v-path').value = nameFor(q('#v-fmt').value);
+  q('#v-fmt').onchange = () => (q('#v-path').value = q('#v-path').value.replace(/\.\w+$/, '.' + SAVE_FORMATS[q('#v-fmt').value].ext));
+  q('#v-cancel').onclick = close;
+  ov.addEventListener('mousedown', (e) => e.target === ov && close());
+  ov.addEventListener('keydown', (e) => e.key === 'Escape' && close());
+  q('#v-browse').onclick = async () => {
+    try {
+      const { save } = await import('@tauri-apps/plugin-dialog');
+      const p = await save({ defaultPath: q('#v-path').value, filters: [{ name: SAVE_FORMATS[q('#v-fmt').value].label, extensions: [SAVE_FORMATS[q('#v-fmt').value].ext] }] });
+      if (p) q('#v-path').value = p;
+    } catch {
+      /* not in the desktop app */
+    }
+  };
+  q('form').onsubmit = async (e) => {
+    e.preventDefault();
+    const path = q('#v-path').value.trim();
+    if (!path) return;
+    const format = q('#v-fmt').value;
+    try {
+      const text = SAVE_FORMATS[format].build(s);
+      const bytes = new TextEncoder().encode(format === 'csv' ? '\ufeff' + text : text);
+      await X.call('write_file', { path, data: btoa(bytesToLatin(bytes)) });
+    } catch (err) {
+      const m = q('#v-err');
+      m.textContent = String(err);
+      m.hidden = false;
+      return;
+    }
+    X.store.set('save', { format, dir: path.replace(/[^\\/]*$/, '') });
+    close();
+    X.note(`Saved ${path}`);
+  };
+  q('#v-path').focus();
 }
