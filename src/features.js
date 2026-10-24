@@ -70,6 +70,18 @@ export function plotFeed(s, text) {
   p.carry += text;
   const lines = p.carry.split(/\r?\n|\r/);
   p.carry = lines.pop().slice(-512);
+  plotLines(s, lines);
+  // Data without a line ending would otherwise wait forever: plot what is left once the line goes quiet.
+  clearTimeout(p.idle);
+  if (p.carry) p.idle = setTimeout(() => {
+    const rest = p.carry;
+    p.carry = '';
+    plotLines(s, [rest]);
+  }, 300);
+}
+
+function plotLines(s, lines) {
+  const p = s.plot;
   let any = false;
   for (const line of lines) {
     for (const [name, value] of parsePlotLine(line)) {
