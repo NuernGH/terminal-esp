@@ -253,3 +253,6 @@ select.theme { font: 12px var(--ui); padding: 4px 6px; background: var(--panel);
 /* "New connection" has its own colour so it does not look like a selected item */
 #b-new, #b-new2 { background: linear-gradient(135deg, #8b5cf6, #d946ef); color: #fff; box-shadow: 0 1px 6px rgba(139, 92, 246, .45); }
 #b-new:hover, #b-new2:hover { filter: brightness(1.1); }
+
+.plot-dig { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: var(--mute); }
+.plot-dig input { width: 40px; font: 12px var(--mono); background: var(--term); color: var(--termfg); border: 1px solid var(--line); border-radius: 5px; padding: 2px 4px; }

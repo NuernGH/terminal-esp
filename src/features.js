@@ -67,6 +67,7 @@ export function parsePlotLine(line) {
 export function plotFeed(s, text) {
   const p = s.plot;
   if (!p || p.paused) return;
+  if (p.digits > 0) return plotDigits(s, text);
   p.carry += text;
   const lines = p.carry.split(/\r?\n|\r/);
   p.carry = lines.pop().slice(-512);
@@ -78,6 +79,19 @@ export function plotFeed(s, text) {
     p.carry = '';
     plotLines(s, [rest]);
   }, 300);
+}
+
+/** Fixed-width mode: every `digits` digits in the stream make one value, so 22222222 with 2 digits gives 22, 22, 22, 22. */
+function plotDigits(s, text) {
+  const p = s.plot;
+  p.dcarry = (p.dcarry || '') + text.replace(ANSI, '').replace(/\D/g, '');
+  const n = p.digits;
+  const vals = [];
+  while (p.dcarry.length >= n) {
+    vals.push(`value=${parseInt(p.dcarry.slice(0, n), 10)}`);
+    p.dcarry = p.dcarry.slice(n);
+  }
+  if (vals.length) plotLines(s, vals);
 }
 
 function plotLines(s, lines) {
@@ -202,11 +216,20 @@ export function togglePlot(s, on = !s.plot) {
   } else {
     const el = document.createElement('div');
     el.className = 'plot';
-    el.innerHTML = `<div class="plot-bar"><b>Plot</b><span class="legend"></span><button type="button" class="btn ghost sm" data-p="scale" title="Scale every series to its own range, useful when values differ a lot">Scale: shared</button><button type="button" class="btn ghost sm" data-p="pause">Pause</button><button type="button" class="btn ghost sm" data-p="clear">Clear</button><button type="button" class="btn ghost sm" data-p="close" aria-label="Close plot">✕</button></div><canvas></canvas>`;
+    el.innerHTML = `<div class="plot-bar"><b>Plot</b><span class="legend"></span><button type="button" class="btn ghost sm" data-p="scale" title="Scale every series to its own range, useful when values differ a lot">Scale: shared</button><label class="plot-dig" title="Split the incoming digits into values of this many digits (for example 2: 22222222 becomes 22, 22, 22, 22). 0 = off, read normal text"><span>Digits</span><input type="number" min="0" max="9" value="0" data-p="digits"></label><button type="button" class="btn ghost sm" data-p="pause">Pause</button><button type="button" class="btn ghost sm" data-p="clear">Clear</button><button type="button" class="btn ghost sm" data-p="close" aria-label="Close plot">✕</button></div><canvas></canvas>`;
     s.pane.querySelector('.split').after(el);
     s.plotEl = el;
     s.plot = { series: new Map(), carry: '', paused: false, raf: 0, canvas: el.querySelector('canvas'), legend: el.querySelector('.legend') };
     s.pane.classList.add('has-plot');
+    const dig = el.querySelector('[data-p=digits]');
+    try { dig.value = localStorage.getItem('esp-terminal.plotdigits:' + s.id) || '0'; } catch {}
+    s.plot.digits = +dig.value || 0;
+    dig.addEventListener('input', () => {
+      s.plot.digits = Math.max(0, Math.min(9, parseInt(dig.value, 10) || 0));
+      s.plot.dcarry = '';
+      s.plot.carry = '';
+      try { localStorage.setItem('esp-terminal.plotdigits:' + s.id, String(s.plot.digits)); } catch {}
+    });
     el.addEventListener('click', (e) => {
       const b = e.target.closest('[data-p]');
       if (!b) return;
