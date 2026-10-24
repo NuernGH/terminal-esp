@@ -46,6 +46,15 @@ const S = {
 const DISPLAY_DEFAULTS = { rx: null, tx: null, echo: true, arrow: true, ts: true, fmt: 'hex', split: 'h', swap: false, ratio: 0.5 };
 let D = { ...DISPLAY_DEFAULTS, ...store.get('display', {}) };
 const cssVar = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const lumOf = (h) => {
+  const c = [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16) / 255).map((v) => (v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4));
+  return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+};
+/** WCAG contrast ratio between two #rrggbb colours (1 to 21). */
+const contrast = (a, b) => {
+  const x = lumOf(a), y = lumOf(b);
+  return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05);
+};
 const rxColour = () => D.rx || cssVar('--termfg');
 const txColour = () => D.tx || cssVar('--cyan');
 
@@ -102,13 +111,13 @@ const scheme = window.matchMedia('(prefers-color-scheme: dark)');
 const th = (dark, bg, panel, panel2, line, fg, mute, accent, term, termfg, ok, warn, err, cyan) => ({ dark, vars: { '--bg': bg, '--panel': panel, '--panel2': panel2, '--line': line, '--fg': fg, '--mute': mute, '--accent': accent, '--term': term, '--termfg': termfg, '--ok': ok, '--warn': warn, '--err': err, '--cyan': cyan } });
 const THEMES = {
   system: { label: 'System' },
-  light: { label: 'Light', ...th(false, '#eef0f3', '#ffffff', '#f4f6f8', '#d9dee5', '#1b2430', '#667487', '#0a7cff', '#fbfcfd', '#1b2430', '#14934a', '#b7791f', '#d6334a', '#0b8aa6') },
+  light: { label: 'Light', ...th(false, '#eef0f3', '#ffffff', '#f4f6f8', '#d9dee5', '#1b2430', '#667487', '#0a6cdc', '#fbfcfd', '#1b2430', '#0f7a3c', '#8f5d0a', '#d6334a', '#0a6f86') },
   dark: { label: 'Dark', ...th(true, '#0c1016', '#141a22', '#10151c', '#232c38', '#e6ebf2', '#8593a6', '#4da3ff', '#0a0e13', '#d5dde8', '#3ddc84', '#f0b64a', '#ff6b81', '#4fd1e8') },
   midnight: { label: 'Midnight blue', ...th(true, '#070b1a', '#0d1329', '#0a1022', '#1c2547', '#dfe6ff', '#7b88b8', '#6c8cff', '#050816', '#cfd8ff', '#4ee3a0', '#f5c45e', '#ff6e8a', '#5cd6ff') },
-  nord: { label: 'Nord', ...th(true, '#272c36', '#2e3440', '#2a303b', '#434c5e', '#eceff4', '#9aa5b8', '#88c0d0', '#2b303b', '#d8dee9', '#a3be8c', '#ebcb8b', '#bf616a', '#8fbcbb') },
+  nord: { label: 'Nord', ...th(true, '#272c36', '#2e3440', '#2a303b', '#434c5e', '#eceff4', '#9aa5b8', '#88c0d0', '#2b303b', '#d8dee9', '#a3be8c', '#ebcb8b', '#e0868f', '#8fbcbb') },
   dracula: { label: 'Dracula', ...th(true, '#1e1f29', '#282a36', '#232530', '#44475a', '#f8f8f2', '#8d90a8', '#bd93f9', '#1e1f29', '#f8f8f2', '#50fa7b', '#f1fa8c', '#ff5555', '#8be9fd') },
-  solardark: { label: 'Solarized dark', ...th(true, '#00212b', '#002b36', '#00252f', '#0b4452', '#eee8d5', '#7f9a9f', '#2aa198', '#002b36', '#93a1a1', '#859900', '#b58900', '#dc322f', '#2aa198') },
-  solarlight: { label: 'Solarized light', ...th(false, '#f3ecd7', '#fdf6e3', '#f7f0dc', '#e1d9c0', '#3f4f55', '#7c8d8f', '#268bd2', '#fdf6e3', '#586e75', '#859900', '#b58900', '#dc322f', '#2aa198') },
+  solardark: { label: 'Solarized dark', ...th(true, '#00212b', '#002b36', '#00252f', '#0b4452', '#eee8d5', '#7f9a9f', '#2aa198', '#002b36', '#93a1a1', '#859900', '#b58900', '#ff6b66', '#2aa198') },
+  solarlight: { label: 'Solarized light', ...th(false, '#f3ecd7', '#fdf6e3', '#f7f0dc', '#e1d9c0', '#3f4f55', '#5f7173', '#268bd2', '#fdf6e3', '#586e75', '#6b7a00', '#8a6900', '#c42b28', '#1f7f78') },
   matrix: { label: 'Green screen', ...th(true, '#020a04', '#06130a', '#040e07', '#123320', '#c7f5d3', '#5f9a73', '#33ff77', '#000000', '#33ff77', '#33ff77', '#d9f24a', '#ff5c5c', '#4dffd2') },
   amber: { label: 'Amber retro', ...th(true, '#0d0800', '#170e00', '#120a00', '#3a2600', '#ffd9a0', '#a37a3b', '#ffb000', '#080500', '#ffb000', '#ffd24a', '#ff9a3c', '#ff5c4a', '#ffcf70') },
   contrast: { label: 'High contrast', ...th(true, '#000000', '#000000', '#0a0a0a', '#6a6a6a', '#ffffff', '#d0d0d0', '#ffeb3b', '#000000', '#ffffff', '#00ff66', '#ffd400', '#ff5050', '#00e5ff') },
@@ -124,6 +133,9 @@ function applyThemeVars() {
     else root.style.removeProperty(k);
   }
   root.style.colorScheme = themeId() === 'system' ? '' : t.dark ? 'dark' : 'light';
+  // Text on accent-coloured buttons: white or near-black, whichever reads better on this theme's accent.
+  const acc = cssVar('--accent');
+  if (/^#[0-9a-f]{6}$/i.test(acc)) root.style.setProperty('--onaccent', contrast(acc, '#ffffff') >= contrast(acc, '#0b1017') ? '#ffffff' : '#0b1017');
 }
 
 function termTheme() {
@@ -556,42 +568,80 @@ function mountShell() {
   const multi = popId ? ' hidden' : '';
   $('#app').innerHTML = `
     <div class="toolbar">
-      <button class="btn only-multi" id="b-new"${multi}>+ New connection</button>
-      <div class="seg only-multi" id="lay"${multi}>
-        <button data-l="tabs">Tabs</button><button data-l="rail">Rail</button><button data-l="grid">Grid</button>
-      </div>
+      <div class="grp"><small>Connections</small><div class="row">
+        <button class="btn only-multi" id="b-new"${multi}>+ New connection</button>
+        <div class="seg only-multi" id="lay"${multi}>
+          <button data-l="tabs">Tabs</button><button data-l="rail">Rail</button><button data-l="grid">Grid</button>
+        </div>
+        <label class="only-grid" id="cols-wrap" hidden>Columns <select id="grid-cols"><option value="auto">Auto</option><option>1</option><option>2</option><option>3</option><option>4</option></select></label>
+      </div></div>
       <span class="sp"></span>
-      <label class="only-grid" id="cols-wrap" hidden>Columns <select id="grid-cols"><option value="auto">Auto</option><option>1</option><option>2</option><option>3</option><option>4</option></select></label>
-      <span class="chip" id="t-addr"></span>
-      <select class="baud" id="t-baud" title="Baud rate. Changes apply immediately." aria-label="Baud rate"></select>
-      <button class="btn ghost sm" id="t-auto" title="Reconnect automatically when the connection drops"></button>
-      <button class="btn ghost sm" id="t-conn"></button>
-      <button class="btn ghost sm" id="t-settings">Port settings…</button>
-      <button class="btn ghost sm" id="t-rename">Rename</button>
-      <button class="btn ghost sm only-multi" id="t-win"${multi}>New window</button>
-      <button class="btn ghost sm keep" id="t-top" title="Keep this window above all other windows">Stay on top</button>
-      <button class="btn ghost sm keep" id="t-min" title="Hide the toolbar and buttons for a minimal window"></button>
-      <button class="btn ghost sm keep" id="t-inp" title="Show or hide the line where you type commands"></button>
-      <div class="seg" id="t-view" title="Raw terminal, raw and decoded side by side, or decoded only"><button data-v="raw">Raw</button><button data-v="split">Split</button><button data-v="decoded">Decoded</button><button data-v="aligned" title="Raw and decoded side by side, one row per message">Aligned</button></div>
-      <button class="btn ghost sm" id="t-swap" title="Swap the raw and decoded sections">⇄ Swap</button>
-      <button class="btn ghost sm" id="t-disp" title="Colours and decoding options">Display…</button>
-      <button class="btn ghost sm" id="t-find" title="Search the terminal (Ctrl+F)">Search</button>
-      <button class="btn ghost sm" id="t-plot" title="Plot numbers found in the incoming text">Plot</button>
-      <button class="btn ghost sm" id="t-log" title="Save everything to a log file"></button>
-      <button class="btn ghost sm" id="t-clear">Clear</button>
-      <select class="theme" id="t-theme" title="Colour theme" aria-label="Colour theme">${Object.entries(THEMES).map(([id, t]) => `<option value="${id}">${t.label}</option>`).join('')}</select>
-      <button class="btn sm" id="t-flash">Flash .bin…</button>
+      <div class="grp"><small>This board</small><div class="row">
+        <span class="chip" id="t-addr"></span>
+        <select class="baud" id="t-baud" title="Baud rate. Changes apply immediately." aria-label="Baud rate"></select>
+        <button class="btn ghost sm" id="t-auto"></button>
+        <button class="btn ghost sm" id="t-conn"></button>
+        <button class="btn ghost sm" id="t-settings">Port settings…</button>
+        <button class="btn ghost sm" id="t-rename">Rename</button>
+        <button class="btn ghost sm only-multi" id="t-win"${multi}>New window</button>
+      </div></div>
+      <div class="grp"><small>View</small><div class="row">
+        <div class="seg" id="t-view"><button data-v="raw">Raw</button><button data-v="split">Split</button><button data-v="decoded">Decoded</button><button data-v="aligned">Aligned</button></div>
+        <button class="btn ghost sm" id="t-swap">⇄ Swap</button>
+        <button class="btn ghost sm" id="t-disp">Display…</button>
+      </div></div>
+      <div class="grp"><small>Tools</small><div class="row">
+        <button class="btn ghost sm" id="t-find">Search</button>
+        <button class="btn ghost sm" id="t-plot">Plot</button>
+        <button class="btn ghost sm" id="t-log"></button>
+        <button class="btn ghost sm" id="t-clear">Clear</button>
+        <button class="btn sm" id="t-flash">Flash .bin…</button>
+      </div></div>
+      <div class="grp keepgrp"><small>App</small><div class="row">
+        <button class="btn ghost sm keep" id="t-top">Stay on top</button>
+        <button class="btn ghost sm keep" id="t-min"></button>
+        <button class="btn ghost sm keep" id="t-inp"></button>
+        <select class="theme" id="t-theme" aria-label="Colour theme">${Object.entries(THEMES).map(([id, t]) => `<option value="${id}">${t.label}</option>`).join('')}</select>
+        <button class="btn sm keep helpbtn" id="t-help" aria-label="Help">?</button>
+      </div></div>
     </div>
     <div class="main">
       <aside class="rail" id="rail"></aside>
       <section class="stage">
         <div class="tabs" id="tabs" role="tablist"></div>
-        <div class="panes" id="panes"><div class="empty" id="empty"><h2>No connections yet</h2>Add a board by serial port, TCP/Telnet or UDP. Give it a name so you can tell your boards apart.<br><br><button class="btn" id="b-new2">+ New connection</button></div></div>
+        <div class="panes" id="panes"><div class="empty" id="empty"><h2>No connections yet</h2><ol class="steps"><li>Click <b>+ New connection</b> and give the board a name.</li><li>Choose <b>Serial</b> and your COM port, or Scan network for WiFi boards.</li><li>Click the dot on its tab to connect. Press <b>?</b> or F1 for help.</li></ol><button class="btn" id="b-new2">+ New connection</button></div></div>
         <div class="macros" id="macros"></div>
         <form class="sendbar" id="sendbar"><input id="send-in" placeholder="Type a command and press Enter…" autocomplete="off" spellcheck="false" aria-label="Send to board"><button class="btn sm">Send</button><button type="button" class="btn ghost sm" id="b-file" title="Send a file to the board">Send file…</button></form>
       </section>
     </div>
     <div class="status" id="status"></div>`;
+
+  const TIPS = {
+    'b-new': 'Add a new board. It starts disconnected: click the dot on its tab to connect.',
+    'b-new2': 'Add a new board. It starts disconnected: click the dot on its tab to connect.',
+    lay: 'Tabs: one board at a time. Rail: all boards in a side list. Grid: all boards on screen at once.',
+    't-auto': 'When on, the app keeps retrying every 2 seconds after the board resets or is unplugged.',
+    't-conn': 'Connect or disconnect this board. You can also click the dot on its tab.',
+    't-settings': 'Port, data bits, parity, stop bits, flow control or address.',
+    't-rename': 'Give this board a name so you can tell your boards apart.',
+    't-win': 'Open this board in its own window.',
+    't-view': 'Raw: normal terminal. Split: raw plus a decoded list. Decoded: only the list. Aligned: raw and decoded side by side, one row per message.',
+    't-swap': 'Swap which section comes first (raw or decoded).',
+    't-disp': 'Colours of received and sent text, decoding format, timestamps and split direction.',
+    't-find': 'Find text in the terminal (Ctrl+F).',
+    't-plot': 'Graph numbers found in the incoming text, for example temp=22.4 hum=41.',
+    't-log': 'Save everything received to a file.',
+    't-clear': 'Clear this terminal. The board is not affected.',
+    't-flash': 'Upload firmware: a .bin over USB (esptool) or WiFi (OTA), or a .hex to an Arduino.',
+    't-top': 'Keep this window above all other windows.',
+    't-min': 'Hide the toolbar for a compact window.',
+    't-inp': 'Show or hide the line where you type commands.',
+    't-theme': 'Colour theme for the whole app.',
+    't-help': 'Help (F1)',
+    'b-file': 'Send a text or binary file to the board, in blocks or line by line.',
+    'grid-cols': 'How many columns the grid uses.',
+  };
+  for (const [id, tip] of Object.entries(TIPS)) { const el = document.getElementById(id); if (el) el.title = tip; }
 }
 
 function renderTabs() {
@@ -1509,14 +1559,87 @@ function wireDivider() {
 }
 
 // ------------------------------------------------------------------ display dialog
+const SWATCHES = {
+  dark: ['#3ddc84', '#4da3ff', '#ffc857', '#ff9f68', '#c792ea', '#5fd7d7', '#e6e6e6', '#7aa2f7'],
+  light: ['#0f7a3c', '#0a58b0', '#8f5d0a', '#b04a00', '#7b3fa0', '#0a6f86', '#333333', '#3a56c4'],
+};
+function colourField(k, label, desc) {
+  const sw = SWATCHES[isDark() ? 'dark' : 'light'].map((c) => `<button type="button" class="swatch" data-set="${k}" data-c="${c}" style="background:${c}" title="${c}" aria-label="Use ${c}"></button>`).join('');
+  return `<div class="full colfield"><b>${label}</b><span class="hint">${desc}</span>
+        <div class="swatches">${sw}</div>
+        <span class="row"><input type="color" id="x-${k}" title="Pick any colour"><input class="hex" id="x-${k}-hex" maxlength="7" spellcheck="false" aria-label="${label} as hex" placeholder="#rrggbb"><button type="button" class="btn ghost sm" data-reset="${k}" title="Use the theme's own colour">Default</button><button type="button" class="btn ghost sm" data-fix="${k}" title="Brighten the colour until it is easy to read">Make readable</button></span>
+        <div class="cprev" id="x-${k}-prev">I (1572057) pngAux: PNG decoded successfully: 400x225</div>
+        <div class="cwarn" id="x-${k}-warn"></div></div>`;
+}
+
+const HELP = {
+  'Getting started': [
+    'Click <b>+ New connection</b>, choose a type, name the board and press Add. New boards start <b>disconnected</b>: click the dot on the board\'s tab (or Connect) to open the port.',
+    '<b>Serial</b> uses a COM port and a baud rate (115200 is the usual ESP default). <b>TCP / Telnet</b> is for WiFi serial bridges: Scan network finds them.',
+    'Anything you type in the box at the bottom is sent when you press Enter. Up and Down recall earlier commands.',
+  ],
+  'RX / TX lights': [
+    'RX flashes when data arrives from the board, TX when you send something. The numbers beside them count bytes since the connection opened.',
+    'The dot on a tab is grey when disconnected, green when connected and amber while connecting or reconnecting. Clicking it connects or disconnects.',
+  ],
+  Layouts: [
+    '<b>Tabs</b> shows one board at a time. <b>Rail</b> lists every board with live RX and TX. <b>Grid</b> shows all boards at once: drag a block\'s header to move it, drag the lines between blocks to resize.',
+    '<b>New window</b> opens one board in its own window. In that window, <b>Minimal</b> hides the toolbar.',
+  ],
+  Views: [
+    '<b>Raw</b> is a normal terminal. <b>Split</b> adds a decoded list (hex, ASCII, decimal, binary). <b>Decoded</b> shows only that list. <b>Aligned</b> shows raw and decoded side by side, one row per message.',
+    '<b>Display…</b> changes the decoding format, timestamps and the colours of received and sent text.',
+  ],
+  Plot: [
+    '<b>Plot</b> graphs numbers in the incoming text: <code>temp=22.4 hum=41</code> gives two named series, plain numbers become v1, v2…',
+    'If values arrive glued together (for example 2222…), set <b>Digits per value</b> so every N digits become one value. 0 turns this off.',
+  ],
+  Flashing: [
+    '<b>Flash .bin…</b> uploads firmware to an ESP over USB with esptool (choose the start address, optionally erase first) or over WiFi (OTA). Arduino boards use a compiled .hex.',
+    'If the board does not respond, hold BOOT while connecting, or put it into bootloader mode first.',
+  ],
+  'Colours & themes': [
+    'The <b>theme</b> list changes the whole app. <b>Display…</b> sets the RX and TX text colours: pick a preset swatch, type a hex value, or use the colour picker. A warning appears when a colour is hard to read on the background.',
+    'Settings are remembered and shared between windows.',
+  ],
+  Shortcuts: ['<b>Ctrl+F</b> search · <b>F1</b> this help · <b>Enter</b> send · <b>Up / Down</b> earlier commands.'],
+};
+function openHelp(topic = 'Getting started') {
+  if ($('#help-ov')) return $('#help-ov').remove();
+  const ov = document.createElement('div');
+  ov.className = 'ov';
+  ov.id = 'help-ov';
+  ov.innerHTML = `<div class="dlg helpdlg" role="dialog" aria-label="Help"><h3>Help</h3><nav class="helpnav"></nav><div class="helpbody"></div><div class="acts"><button type="button" class="btn" id="h-close">Close</button></div></div>`;
+  document.body.append(ov);
+  const nav = $('.helpnav', ov), body = $('.helpbody', ov);
+  const show = (k) => {
+    $$('button', nav).forEach((b) => b.setAttribute('aria-pressed', String(b.textContent === k)));
+    body.innerHTML = HELP[k].map((t) => `<p>${t}</p>`).join('');
+  };
+  for (const k of Object.keys(HELP)) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'btn ghost sm';
+    b.textContent = k;
+    b.onclick = () => show(k);
+    nav.append(b);
+  }
+  show(topic);
+  const close = () => ov.remove();
+  $('#h-close', ov).onclick = close;
+  ov.addEventListener('mousedown', (e) => e.target === ov && close());
+  ov.addEventListener('keydown', (e) => e.key === 'Escape' && close());
+  $('#h-close', ov).focus();
+}
+
 function openDisplayDialog() {
   const ov = document.createElement('div');
   ov.className = 'ov';
   ov.innerHTML = `<form class="dlg" role="dialog" aria-label="Display settings">
     <h3>Display</h3>
     <div class="frm">
-      <label>Incoming (RX) colour<span class="row"><input type="color" id="x-rx"><button type="button" class="btn ghost sm" data-reset="rx">Default</button></span></label>
-      <label>Outgoing (TX) colour<span class="row"><input type="color" id="x-tx"><button type="button" class="btn ghost sm" data-reset="tx">Default</button></span></label>
+      ${colourField('rx', 'Incoming (RX) colour', 'Text received from the board.')}
+      ${colourField('tx', 'Outgoing (TX) colour', 'Commands you send. Also recolours lines already on screen.')}
       <label class="chk full"><input type="checkbox" id="x-echo"> Show commands you send in the terminal, in the TX colour</label>
       <label class="chk full"><input type="checkbox" id="x-arrow"> Mark sent lines with →</label>
       <label>Decode as<select id="x-fmt">${FORMATS.map(([v, l]) => `<option value="${v}">${l}</option>`).join('')}</select></label>
@@ -1529,9 +1652,24 @@ function openDisplayDialog() {
   </form>`;
   document.body.append(ov);
   const q = (x) => $(x, ov);
+  const colourOf = (k) => (k === 'rx' ? rxColour() : txColour());
+  const refreshColour = (k) => {
+    const v = colourOf(k);
+    const bg = cssVar('--term');
+    if (document.activeElement !== q(`#x-${k}-hex`)) q(`#x-${k}-hex`).value = v;
+    q(`#x-${k}`).value = v;
+    const prev = q(`#x-${k}-prev`);
+    prev.style.color = v;
+    prev.style.background = bg;
+    const w = q(`#x-${k}-warn`);
+    if (!/^#[0-9a-f]{6}$/i.test(v)) { w.textContent = ''; return; }
+    const r = contrast(v, bg);
+    w.className = 'cwarn ' + (r < 3 ? 'bad' : r < 4.5 ? 'meh' : 'good');
+    w.textContent = r < 3 ? `Hard to read on this background (contrast ${r.toFixed(1)}:1). Pick a lighter colour or press Make readable.` : r < 4.5 ? `Readable, but a little dim (contrast ${r.toFixed(1)}:1).` : `Easy to read (contrast ${r.toFixed(1)}:1).`;
+  };
+  const setColour = (k, v) => { D[k] = v; save(); refreshColour(k); };
   const fill = () => {
-    q('#x-rx').value = rxColour();
-    q('#x-tx').value = txColour();
+    for (const k of ['rx', 'tx']) refreshColour(k);
     q('#x-echo').checked = D.echo;
     q('#x-arrow').checked = D.arrow;
     q('#x-fmt').value = D.fmt;
@@ -1545,10 +1683,23 @@ function openDisplayDialog() {
   };
   fill();
   // The Windows colour picker does not always fire `input` for typed RGB values, so listen for `change` too.
-  for (const ev of ['input', 'change']) {
-    q('#x-rx').addEventListener(ev, (e) => ((D.rx = e.target.value), save()));
-    q('#x-tx').addEventListener(ev, (e) => ((D.tx = e.target.value), save()));
+  for (const k of ['rx', 'tx']) {
+    for (const ev of ['input', 'change']) q(`#x-${k}`).addEventListener(ev, (e) => setColour(k, e.target.value));
+    q(`#x-${k}-hex`).addEventListener('input', (e) => {
+      const v = e.target.value.trim();
+      if (/^#[0-9a-f]{6}$/i.test(v)) setColour(k, v.toLowerCase());
+    });
   }
+  $$('[data-set]', ov).forEach((b) => (b.onclick = () => setColour(b.dataset.set, b.dataset.c)));
+  $$('[data-fix]', ov).forEach((b) => (b.onclick = () => {
+    const k = b.dataset.fix;
+    let c = colourOf(k);
+    if (!/^#[0-9a-f]{6}$/i.test(c)) return;
+    const bg = cssVar('--term');
+    const to = lumOf(bg) < 0.4 ? 255 : 0;
+    for (let i = 0; i < 40 && contrast(c, bg) < 4.5; i++) c = '#' + [1, 3, 5].map((j) => Math.round(parseInt(c.slice(j, j + 2), 16) * 0.88 + to * 0.12 + (to ? 4 : 0)).toString(16).padStart(2, '0')).join('');
+    setColour(k, c);
+  }));
   q('#x-echo').onchange = (e) => ((D.echo = e.target.checked), save());
   q('#x-arrow').onchange = (e) => ((D.arrow = e.target.checked), save());
   q('#x-fmt').onchange = (e) => ((D.fmt = e.target.value), save());
@@ -1692,6 +1843,8 @@ function wire() {
   $('#t-log').onclick = () => cur() && F.openLogDialog(cur());
   $('#b-file').onclick = () => F.openSendFileDialog();
   $('#t-disp').onclick = openDisplayDialog;
+  $('#t-help').onclick = () => openHelp();
+  document.addEventListener('keydown', (e) => e.key === 'F1' && (e.preventDefault(), openHelp()));
   document.addEventListener('change', (e) => {
     const sel = e.target.closest?.('select.decfmt');
     if (!sel) return;
