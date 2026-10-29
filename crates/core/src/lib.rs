@@ -5,6 +5,7 @@
 pub mod flash;
 pub mod scan;
 pub mod telnet;
+pub mod update;
 
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};

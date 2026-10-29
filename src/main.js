@@ -2,7 +2,7 @@ import '@xterm/xterm/css/xterm.css';
 import './style.css';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
-import { call, onSession, onFlash, b64ToBytes, inTauri } from './api.js';
+import { call, onSession, onFlash, onUpdate, b64ToBytes, inTauri } from './api.js';
 import { FORMATS, formatBytes } from './decode.js';
 import * as F from './features.js';
 
@@ -773,7 +773,8 @@ async function checkUpdate(manual) {
     const rel = await r.json();
     const v = String(rel.tag_name || '').replace(/^v/, '');
     if (v && newer(v, VERSION)) {
-      UPDATE = { version: v, url: rel.html_url };
+      const setup = (rel.assets || []).find((a) => /-setup\.exe$/i.test(a.name));
+      UPDATE = { version: v, url: rel.html_url, setup: setup?.browser_download_url, digest: setup?.digest, size: setup?.size, notes: rel.name || '' };
       note(`Version ${v} is available.`);
     } else {
       UPDATE = null;
@@ -784,6 +785,9 @@ async function checkUpdate(manual) {
   }
   renderStatus();
 }
+
+// Browser simulator only: lets the tests pretend a newer release exists.
+if (!inTauri) window.__testUpdate = (u) => ((VERSION = '0.1.1'), (UPDATE = u), renderStatus());
 
 if (inTauri)
   import('@tauri-apps/api/app')
@@ -806,6 +810,55 @@ function renderStatus() {
       'beforeend',
       `${UPDATE ? `<a class="upd" href="#" data-update title="Open the download page">⬆ Version ${esc(UPDATE.version)} available</a>` : ''}<span class="ver" data-check title="App version. Click to check for updates.">v${esc(VERSION)}</span>`,
     );
+}
+
+/** Offers to download and install the new version in place (installed copies) or opens the release page (portable copy). */
+async function openUpdateDialog() {
+  if (!UPDATE || $('#upd-ov')) return;
+  const canSelf = !!UPDATE.setup && (await call('can_self_update').catch(() => false));
+  const mb = UPDATE.size ? ` (${(UPDATE.size / 1048576).toFixed(0)} MB)` : '';
+  const ov = document.createElement('div');
+  ov.className = 'ov';
+  ov.id = 'upd-ov';
+  ov.innerHTML = `<div class="dlg" role="dialog" aria-label="Update"><h3>Version ${esc(UPDATE.version)} is available</h3>
+    <p class="hint">You have ${esc(VERSION)}. ${canSelf
+      ? `Update now downloads the new version${mb}, installs it over this one and restarts NuTerm. Your sessions and settings are kept, and connections close briefly while it restarts.`
+      : 'This copy cannot update itself (it is the portable version, or not installed with the setup program). Download the new version from the release page.'}</p>
+    <div class="prog" id="u-prog" hidden><i id="u-bar"></i></div><p class="hint" id="u-msg"></p>
+    <div class="acts"><button type="button" class="btn ghost" id="u-later">Later</button><button type="button" class="btn ghost" id="u-page">Release page</button>${canSelf ? '<button type="button" class="btn" id="u-go">Update now</button>' : ''}</div></div>`;
+  document.body.append(ov);
+  const q = (x) => $(x, ov);
+  let unlisten = null;
+  const close = () => (unlisten?.(), ov.remove());
+  q('#u-later').onclick = close;
+  q('#u-page').onclick = () => call('open_release_page', { url: UPDATE.url }).catch((err) => note(String(err), true));
+  ov.addEventListener('keydown', (e) => e.key === 'Escape' && close());
+  const go = q('#u-go');
+  if (go)
+    go.onclick = async () => {
+      go.disabled = true;
+      q('#u-prog').hidden = false;
+      q('#u-msg').textContent = 'Downloading…';
+      unlisten = await onUpdate((ev) => {
+        if (ev.phase === 'download') {
+          const pct = ev.total ? Math.min(100, (ev.done / ev.total) * 100) : 0;
+          q('#u-bar').style.width = pct + '%';
+          q('#u-msg').textContent = `Downloading… ${(ev.done / 1048576).toFixed(1)}${ev.total ? ' of ' + (ev.total / 1048576).toFixed(1) : ''} MB`;
+        } else if (ev.phase === 'install') {
+          q('#u-bar').style.width = '100%';
+          q('#u-msg').textContent = 'Installing. NuTerm will close and reopen by itself.';
+        } else if (ev.phase === 'error') {
+          q('#u-msg').textContent = ev.message;
+          q('#u-msg').classList.add('err-text');
+          go.disabled = false;
+          go.textContent = 'Try again';
+        }
+      });
+      call('start_update', { url: UPDATE.setup, sha256: UPDATE.digest || null }).catch((err) => {
+        q('#u-msg').textContent = String(err);
+        go.disabled = false;
+      });
+    };
 }
 
 function updateTitle() {
@@ -1857,7 +1910,7 @@ function wire() {
   $('#status').addEventListener('click', (e) => {
     if (e.target.closest('[data-update]') && UPDATE) {
       e.preventDefault();
-      call('open_release_page', { url: UPDATE.url }).catch((err) => note(String(err), true));
+      openUpdateDialog();
     } else if (e.target.closest('[data-check]')) checkUpdate(true);
   });
   $('#macros').addEventListener('click', (e) => {

@@ -102,6 +102,56 @@ fn open_release_page(url: String) -> Result<(), String> {
     Ok(())
 }
 
+/// True for a copy installed by the setup program, which can update itself. The unzipped portable copy cannot.
+#[tauri::command]
+fn can_self_update() -> bool {
+    #[cfg(windows)]
+    {
+        std::env::current_exe()
+            .map(|p| {
+                let s = p.to_string_lossy().to_ascii_lowercase();
+                s.contains("\\appdata\\local\\") || s.contains("\\program files")
+            })
+            .unwrap_or(false)
+    }
+    #[cfg(not(windows))]
+    false
+}
+
+/// Downloads the installer of a newer release, then runs it (it replaces the installed files and restarts the app).
+/// Progress arrives as `update` events: download (done, total), install, error.
+#[tauri::command]
+fn start_update(app: AppHandle, url: String, sha256: Option<String>) -> Result<(), String> {
+    if !esp_core::update::url_allowed(&url) {
+        return Err("Not an allowed address".into());
+    }
+    std::thread::spawn(move || {
+        let emit = |v: Value| {
+            let _ = app.emit("update", v);
+        };
+        let dest = std::env::temp_dir().join("NuTerm-update").join("NuTerm-setup.exe");
+        emit(serde_json::json!({"phase": "download", "done": 0, "total": null}));
+        let result = esp_core::update::download(&url, sha256.as_deref(), &dest, |done, total| emit(serde_json::json!({"phase": "download", "done": done, "total": total})));
+        match result {
+            Err(e) => emit(serde_json::json!({"phase": "error", "message": e})),
+            Ok(()) => {
+                emit(serde_json::json!({"phase": "install"}));
+                #[cfg(windows)]
+                match std::process::Command::new(&dest).args(["/P", "/R", "/UPDATE"]).spawn() {
+                    Ok(_) => {
+                        std::thread::sleep(std::time::Duration::from_millis(800));
+                        app.exit(0);
+                    }
+                    Err(e) => emit(serde_json::json!({"phase": "error", "message": format!("Could not start the installer: {e}")})),
+                }
+                #[cfg(not(windows))]
+                emit(serde_json::json!({"phase": "error", "message": "Automatic updates work on Windows only"}));
+            }
+        }
+    });
+    Ok(())
+}
+
 #[tauri::command]
 fn session_resize(eng: State<Core>, id: String, cols: u16, rows: u16) -> Result<(), String> {
     eng.0.resize(&id, cols, rows)
@@ -421,6 +471,8 @@ fn main() {
             read_file_b64,
             append_file,
             write_file,
+            can_self_update,
+            start_update,
             session_backlog,
             session_clear,
             scan_network,

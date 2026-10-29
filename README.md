@@ -67,7 +67,13 @@ Every build also makes `NuTerm-<version>-portable.zip` (Actions artifact `esp-te
 
 ## Updates
 
-Every push to `main` publishes a GitHub Release (`v0.1.<run number>`) with the installer and the portable zip. The app checks the latest release a few seconds after starting and shows "⬆ Version x available" in the status bar; click the version number at the right of the status bar to check by hand. The link opens the release page, the update is not installed automatically.
+Every push to `main` publishes a GitHub Release (`v0.1.<run number>`) with the installer and the portable zip. The app checks the latest release a few seconds after starting and shows "⬆ Version x available" in the status bar; click the version number at the right of the status bar to check by hand.
+
+Click the "available" link for the update dialog. On a copy installed with the setup program, **Update now** downloads the new installer (checked against the checksum GitHub publishes for it), runs it and restarts NuTerm; sessions and settings are kept. The portable copy cannot update itself: the dialog sends you to the release page instead. Updates are not code-signed (see "Windows SmartScreen" below), so this relies on HTTPS and the GitHub checksum only.
+
+## Windows SmartScreen
+
+The exe is not code-signed, so Windows may show "Windows protected your PC" the first time it runs. Click "More info", then "Run anyway". Removing the warning for good needs a code-signing certificate.
 
 ## Tray
 

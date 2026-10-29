@@ -27,6 +27,14 @@ export async function onFlash(cb) {
   return () => flashListeners.delete(cb);
 }
 
+const updateListeners = new Set();
+/** Subscribe to in-place update progress (download, install, error). */
+export async function onUpdate(cb) {
+  if (inTauri) return listen('update', (e) => cb(e.payload));
+  updateListeners.add(cb);
+  return () => updateListeners.delete(cb);
+}
+
 export async function call(cmd, args = {}) {
   return inTauri ? invoke(cmd, args) : mockCall(cmd, args);
 }
@@ -116,6 +124,13 @@ function mockCall(cmd, a) {
     }
     case 'session_set_secret':
       (window.__secrets ??= []).push([a.id, a.secret]);
+      return Promise.resolve();
+    case 'can_self_update':
+      return Promise.resolve(true);
+    case 'start_update':
+      (window.__updates ??= []).push(a);
+      [0, 40, 80].forEach((pct, i) => setTimeout(() => updateListeners.forEach((cb) => cb({ phase: 'download', done: pct * 1048576 / 10, total: 8 * 1048576 })), 100 * (i + 1)));
+      setTimeout(() => updateListeners.forEach((cb) => cb({ phase: 'install' })), 500);
       return Promise.resolve();
     case 'open_release_page':
       (window.__opened ??= []).push(a.url);
