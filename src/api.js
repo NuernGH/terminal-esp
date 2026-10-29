@@ -10,6 +10,7 @@ const strToB64 = (s) => btoa(unescape(encodeURIComponent(s)));
 
 const listeners = new Set();
 const emit = (ev) => listeners.forEach((cb) => cb(ev));
+if (typeof window !== 'undefined') window.__emitEvent = emit;
 
 /** Subscribe to backend session events. Returns a promise of an unlisten function. */
 export async function onSession(cb) {

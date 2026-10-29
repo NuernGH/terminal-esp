@@ -293,3 +293,10 @@ body.minimal .toolbar .keepgrp > small { display: none; }
 .plot-full .split { display: none !important; }
 .plot-full .plot { flex: 1 1 auto; height: auto; min-height: 0; }
 .rec.flash { outline: 2px solid #b8860b; outline-offset: -2px; background: rgba(184, 134, 11, .25); transition: background .4s; }
+
+.status .idle { color: var(--warn); }
+
+.plot-series { position: absolute; right: 8px; top: 34px; z-index: 4; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 8px; display: flex; flex-direction: column; gap: 5px; max-height: 80%; overflow: auto; box-shadow: 0 6px 20px rgba(0, 0, 0, .35); min-width: 200px; }
+.plot-series .srow { display: flex; align-items: center; gap: 6px; font-size: 12px; }
+.plot-series .srow i { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+.plot-series .srow input[type=text] { font: 12px var(--mono); background: var(--term); color: var(--termfg); border: 1px solid var(--line); border-radius: 5px; padding: 3px 6px; width: 150px; }

@@ -43,7 +43,7 @@ const S = {
 
 // ------------------------------------------------------------------ display settings
 // Colours for incoming/outgoing text and the decoded view. null = follow the theme.
-const DISPLAY_DEFAULTS = { rx: null, tx: null, echo: true, arrow: true, ts: true, fmt: 'hex', split: 'h', swap: false, ratio: 0.5 };
+const DISPLAY_DEFAULTS = { rx: null, tx: null, echo: true, arrow: true, ts: true, rawts: false, fmt: 'hex', split: 'h', swap: false, ratio: 0.5 };
 let D = { ...DISPLAY_DEFAULTS, ...store.get('display', {}) };
 const cssVar = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
 const lumOf = (h) => {
@@ -291,8 +291,23 @@ const rawText = (bytes) =>
     c === '\r' ? '\\r' : c === '\n' ? '\\n' : c === '\t' ? '\\t' : c === '\x1b' ? '\\e' : `\\x${c.charCodeAt(0).toString(16).padStart(2, '0')}`,
   );
 
-function paintRecord(s, r) {
-  const stick = s.dec.scrollTop + s.dec.clientHeight >= s.dec.scrollHeight - 24;
+/** Paints changed records once per frame instead of once per received chunk, so a fast stream cannot back up the UI. */
+function queuePaint(s, r) {
+  (s.dirty ??= new Set()).add(r);
+  if (s.paintRaf) return;
+  s.paintRaf = requestAnimationFrame(() => {
+    s.paintRaf = 0;
+    const todo = s.dirty;
+    s.dirty = new Set();
+    if (!s.decode) return;
+    const stick = s.dec.scrollTop + s.dec.clientHeight >= s.dec.scrollHeight - 24;
+    for (const rec of todo) if (!rec.gone) paintRecord(s, rec, true);
+    if (stick) s.dec.scrollTop = s.dec.scrollHeight;
+  });
+}
+
+function paintRecord(s, r, batched = false) {
+  const stick = !batched && s.dec.scrollTop + s.dec.clientHeight >= s.dec.scrollHeight - 24;
   if (!r.el) {
     r.el = document.createElement('div');
     r.el.className = `rec ${r.dir}`;
@@ -326,13 +341,17 @@ function addRecord(s, dir, bytes) {
     merged.set(bytes, last.bytes.length);
     last.bytes = merged;
     last.last = now;
-    if (s.decode) paintRecord(s, last);
+    if (s.decode) queuePaint(s, last);
     return;
   }
   const r = { dir, t: now, last: now, bytes: bytes.slice() };
   s.rec.push(r);
-  if (s.rec.length > MAX_REC) s.rec.shift().el?.remove();
-  if (s.decode) paintRecord(s, r);
+  if (s.rec.length > MAX_REC) {
+    const old = s.rec.shift();
+    old.gone = true;
+    old.el?.remove();
+  }
+  if (s.decode) queuePaint(s, r);
 }
 
 function setView(s, view) {
@@ -514,6 +533,27 @@ function setLayout(l) {
 }
 
 // ------------------------------------------------------------------ backend events
+/** Puts the arrival time in front of every new line of received text (Display… → timestamps in the terminal). */
+function stampLines(s, data) {
+  const text = typeof data === 'string' ? data : (s.tsDec ??= new TextDecoder()).decode(data, { stream: true });
+  s.atLineStart ??= true;
+  const prefix = `\x1b[90m${clock(Date.now())}\x1b[39m `;
+  const parts = text.split('\n');
+  let out = '';
+  parts.forEach((seg, i) => {
+    if (seg !== '' && seg !== '\r' && s.atLineStart) {
+      out += prefix;
+      s.atLineStart = false;
+    }
+    out += seg;
+    if (i < parts.length - 1) {
+      out += '\n';
+      s.atLineStart = true;
+    }
+  });
+  return out;
+}
+
 function onEvent(ev) {
   if (ev.type === 'stats') {
     for (const r of ev.rows) {
@@ -529,7 +569,8 @@ function onEvent(ev) {
   if (!s) return;
   if (ev.type === 'data') {
     const bytes = b64ToBytes(ev.data);
-    s.term.write(F.forTerminal(s.enc, bytes));
+    const shown = F.forTerminal(s.enc, bytes);
+    s.term.write(D.rawts ? stampLines(s, shown) : shown);
     addRecord(s, 'rx', bytes);
     if (s.log) F.logWrite(s, 'rx', bytes);
     if (s.plot) F.plotFeed(s, F.textOf(s.enc, bytes));
@@ -546,6 +587,7 @@ function onEvent(ev) {
   } else if (ev.type === 'state') {
     const was = s.state;
     s.state = ev.state;
+    s.atLineStart = true;
     if (ev.state === 'on') {
       s.sizeKey = null;
       reportSize(s);
@@ -757,7 +799,7 @@ function renderStatus() {
   const s = cur();
   const n = S.note;
   $('#status').innerHTML = s
-    ? `<span>${s.state === 'on' ? '● Connected' : s.state === 'connecting' ? '◌ Connecting…' : '○ Disconnected'} · ${esc(s.name)}</span>${leds(s, true)}<span>${esc(s.lineEnd)}</span>${n ? `<span class="msg ${n.isErr ? 'err' : ''}">${esc(n.msg)}</span>` : ''}`
+    ? `<span>${s.state === 'on' ? '● Connected' : s.state === 'connecting' ? '◌ Connecting…' : '○ Disconnected'} · ${esc(s.name)}</span>${leds(s, true)}<span class="idle" data-idle data-sid="${s.id}"></span><span>${esc(s.lineEnd)}</span>${n ? `<span class="msg ${n.isErr ? 'err' : ''}">${esc(n.msg)}</span>` : ''}`
     : `<span>Ready</span>${n ? `<span class="msg ${n.isErr ? 'err' : ''}">${esc(n.msg)}</span>` : ''}`;
   if (VERSION)
     $('#status').insertAdjacentHTML(
@@ -807,6 +849,16 @@ setInterval(() => {
     if (el.textContent !== t) el.textContent = t;
   }
 }, 120);
+
+// "No data for N s" next to the counters, so a quiet or dead connection is obvious at a glance.
+setInterval(() => {
+  const el = $('[data-idle]');
+  if (!el) return;
+  const s = get(el.dataset.sid);
+  const secs = s && s.state === 'on' && s.rxAt ? Math.floor((Date.now() - s.rxAt) / 1000) : 0;
+  const t = secs >= 3 ? `no data for ${secs >= 60 ? Math.floor(secs / 60) + ' min' : secs + ' s'}` : '';
+  if (el.textContent !== t) el.textContent = t;
+}, 1000);
 
 // ------------------------------------------------------------------ rename
 function startRename(id, el) {
@@ -1648,6 +1700,7 @@ function openDisplayDialog() {
       <label>Split layout<select id="x-split"><option value="h">Side by side</option><option value="v">Stacked</option></select></label>
       <label class="chk full"><input type="checkbox" id="x-swap"> Decoded first (left or top) instead of raw</label>
       <label class="chk full"><input type="checkbox" id="x-ts"> Show timestamps in the decoded view</label>
+      <label class="chk full"><input type="checkbox" id="x-rawts"> Show the arrival time in front of each line in the terminal (Raw view)</label>
     </div>
     <p class="hint">Use the <b>Raw / Split / Decoded</b> switch in the toolbar to show the raw terminal, both, or only the decoded view (drag the divider to resize). The decoded part lists every chunk received (RX) and sent (TX). Changes apply right away.</p>
     <div class="acts"><button type="button" class="btn ghost" id="x-reset">Reset all</button><button type="button" class="btn" id="x-close">Done</button></div>
@@ -1678,6 +1731,7 @@ function openDisplayDialog() {
     q('#x-split').value = D.split;
     q('#x-swap').checked = D.swap;
     q('#x-ts').checked = D.ts;
+    q('#x-rawts').checked = D.rawts;
   };
   const save = () => {
     store.set('display', D);
@@ -1708,6 +1762,7 @@ function openDisplayDialog() {
   q('#x-split').onchange = (e) => ((D.split = e.target.value), save());
   q('#x-swap').onchange = (e) => ((D.swap = e.target.checked), save());
   q('#x-ts').onchange = (e) => ((D.ts = e.target.checked), save());
+  q('#x-rawts').onchange = (e) => ((D.rawts = e.target.checked), save());
   $$('[data-reset]', ov).forEach((b) => (b.onclick = () => ((D[b.dataset.reset] = null), save(), fill())));
   q('#x-reset').onclick = () => ((D = { ...DISPLAY_DEFAULTS }), save(), fill());
   const close = () => ov.remove();

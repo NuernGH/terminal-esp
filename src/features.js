@@ -94,6 +94,35 @@ function plotDigits(s, text) {
   if (vals.length) plotLines(s, vals);
 }
 
+const seriesOpts = (s) => X.store.get('plotseries:' + s.id, {});
+const seriesName = (ser) => ser.label || ser.name;
+function saveSeriesOpts(s) {
+  const o = {};
+  for (const ser of s.plot.series.values()) if (ser.hidden || ser.label) o[ser.name] = { hidden: ser.hidden || undefined, label: ser.label || undefined };
+  X.store.set('plotseries:' + s.id, o);
+}
+
+/** The "Series" list: tick to show or hide a series, edit its name to rename it. */
+function renderSeriesPanel(s) {
+  const p = s.plot;
+  if (!p.panel) return;
+  const focused = p.panel.contains(document.activeElement) ? document.activeElement : null;
+  if (focused && focused.tagName === 'INPUT' && focused.type === 'text') return; // do not rebuild while typing
+  const rows = [...p.series.values()];
+  p.panel.innerHTML = rows.length
+    ? rows.map((ser, i) => `<label class="srow"><input type="checkbox" data-i="${i}" ${ser.hidden ? '' : 'checked'} title="Show on the plot"><i style="background:${ser.colour}"></i><input type="text" data-n="${i}" value="${X.esc(seriesName(ser))}" placeholder="${X.esc(ser.name)}" title="Name shown on the plot. Clear it to go back to ${X.esc(ser.name)}." spellcheck="false"></label>`).join('')
+    : '<span class="hint">No series yet. They appear when numbers arrive.</span>';
+  p.panel.onchange = (e) => {
+    const t = e.target;
+    const ser = rows[+(t.dataset.i ?? t.dataset.n)];
+    if (!ser) return;
+    if (t.dataset.i !== undefined) ser.hidden = !t.checked;
+    else ser.label = t.value.trim() === ser.name ? '' : t.value.trim();
+    saveSeriesOpts(s);
+    drawPlot(s);
+  };
+}
+
 /** Remembers when a plotted value arrived and where it is in the terminal, so a click can find it again. */
 function markPoint(s) {
   const slot = { t: Date.now(), mk: null };
@@ -117,7 +146,8 @@ function plotLines(s, lines) {
       let ser = p.series.get(name);
       if (!ser) {
         if (p.series.size >= 8) continue;
-        ser = { name, colour: COLOURS[p.series.size % COLOURS.length], pts: [], meta: [] };
+        const o = seriesOpts(s)[name] || {};
+        ser = { name, colour: COLOURS[p.series.size % COLOURS.length], pts: [], meta: [], hidden: !!o.hidden, label: o.label || '' };
         p.series.set(name, ser);
       }
       ser.pts.push(value);
@@ -129,6 +159,7 @@ function plotLines(s, lines) {
       any = true;
     }
   }
+  if (any && p.panel) renderSeriesPanel(s);
   if (any && !p.raf)
     p.raf = requestAnimationFrame(() => {
       p.raf = 0;
@@ -168,7 +199,7 @@ function wirePlotPointer(s) {
       tip.hidden = true;
     } else {
       const m = hit.ser.meta[hit.i];
-      tip.innerHTML = `<b style="color:${hit.ser.colour}">${X.esc(hit.ser.name)}</b> ${hit.ser.pts[hit.i]}<br><small>${stamp(new Date(m.t)).slice(11)} · click to find it in the terminal</small>`;
+      tip.innerHTML = `<b style="color:${hit.ser.colour}">${X.esc(seriesName(hit.ser))}</b> ${hit.ser.pts[hit.i]}<br><small>${stamp(new Date(m.t)).slice(11)} · click to find it in the terminal</small>`;
       tip.hidden = false;
       const r = p.canvas.getBoundingClientRect();
       const host = s.plotEl.getBoundingClientRect();
@@ -232,7 +263,8 @@ export function drawPlot(s) {
   const mute = css.getPropertyValue('--mute').trim() || '#8a94a6';
   const line = css.getPropertyValue('--line').trim() || '#2a3340';
   g.clearRect(0, 0, w, h);
-  const series = [...p.series.values()];
+  const all = [...p.series.values()];
+  const series = all.filter((x) => !x.hidden);
   const left = 46;
   const top = 8;
   const bottom = 16;
@@ -250,7 +282,9 @@ export function drawPlot(s) {
   g.font = '11px ui-monospace, Consolas, monospace';
   if (!series.length || !Number.isFinite(lo)) {
     g.fillStyle = mute;
-    g.fillText('Waiting for numbers in the incoming text (for example temp=22.4 hum=41)…', left, h / 2);
+    g.fillText(all.length ? 'All series are hidden. Tick one under Series.' : 'Waiting for numbers in the incoming text (for example temp=22.4 hum=41)…', left, h / 2);
+    p.geo = null;
+    p.legend.innerHTML = '';
     return;
   }
   if (hi === lo) {
@@ -313,7 +347,7 @@ export function drawPlot(s) {
     }
   }
   p.legend.innerHTML = series
-    .map((ser) => `<span><i style="background:${ser.colour}"></i>${X.esc(ser.name)} <b>${ser.pts[ser.pts.length - 1]}</b></span>`)
+    .map((ser) => `<span><i style="background:${ser.colour}"></i>${X.esc(seriesName(ser))} <b>${ser.pts[ser.pts.length - 1]}</b></span>`)
     .join('');
 }
 
@@ -327,7 +361,7 @@ export function togglePlot(s, on = !s.plot) {
   } else {
     const el = document.createElement('div');
     el.className = 'plot';
-    el.innerHTML = `<div class="plot-bar"><b>Plot</b><span class="legend"></span><button type="button" class="btn ghost sm" data-p="scale" title="Scale every series to its own range, useful when values differ a lot">Scale: shared</button><label class="plot-dig" title="Split the incoming digits into values of this many digits (for example 2: 22222222 becomes 22, 22, 22, 22). 0 = off, read normal text"><span>Digits per value</span><input type="number" min="0" max="9" value="0" data-p="digits"></label><button type="button" class="btn ghost sm" data-p="full" title="Show only the plot, hiding the terminal">Plot only</button><button type="button" class="btn ghost sm" data-p="pause">Pause</button><button type="button" class="btn ghost sm" data-p="clear">Clear</button><button type="button" class="btn ghost sm" data-p="close" aria-label="Close plot">✕</button></div><canvas></canvas><div class="plot-tip" hidden></div>`;
+    el.innerHTML = `<div class="plot-bar"><b>Plot</b><span class="legend"></span><button type="button" class="btn ghost sm" data-p="scale" title="Scale every series to its own range, useful when values differ a lot">Scale: shared</button><label class="plot-dig" title="Split the incoming digits into values of this many digits (for example 2: 22222222 becomes 22, 22, 22, 22). 0 = off, read normal text"><span>Digits per value</span><input type="number" min="0" max="9" value="0" data-p="digits"></label><button type="button" class="btn ghost sm" data-p="series" title="Choose which series to show and rename them">Series…</button><button type="button" class="btn ghost sm" data-p="full" title="Show only the plot, hiding the terminal">Plot only</button><button type="button" class="btn ghost sm" data-p="pause">Pause</button><button type="button" class="btn ghost sm" data-p="clear">Clear</button><button type="button" class="btn ghost sm" data-p="close" aria-label="Close plot">✕</button></div><canvas></canvas><div class="plot-tip" hidden></div><div class="plot-series" hidden></div>`;
     s.pane.querySelector('.split').after(el);
     s.plotEl = el;
     s.plot = { series: new Map(), carry: '', paused: false, raf: 0, canvas: el.querySelector('canvas'), legend: el.querySelector('.legend') };
@@ -352,6 +386,11 @@ export function togglePlot(s, on = !s.plot) {
         s.plot.series.clear();
         s.plot.legend.innerHTML = '';
         drawPlot(s);
+      } else if (b.dataset.p === 'series') {
+        const panel = s.plotEl.querySelector('.plot-series');
+        panel.hidden = !panel.hidden;
+        s.plot.panel = panel.hidden ? null : panel;
+        if (s.plot.panel) renderSeriesPanel(s);
       } else if (b.dataset.p === 'full') {
         const on = !s.pane.classList.contains('plot-full');
         s.pane.classList.toggle('plot-full', on);
