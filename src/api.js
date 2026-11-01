@@ -108,6 +108,7 @@ function mockCall(cmd, a) {
     case 'session_send': {
       const s = sim.sessions.get(a.id);
       if (s.state !== 'on') return Promise.reject('Not connected');
+      (window.__sentText ??= []).push(a.data);
       if (a.data.startsWith('!drop')) {
         clearInterval(sim.timers.get(a.id));
         s.state = 'off';

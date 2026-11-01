@@ -29,6 +29,7 @@ backend) and xterm.js.
 - **View: Raw / Split / Decoded / Aligned** (per session, toolbar): raw terminal, raw and decoded together (side by side or stacked, draggable divider, ⇄ swaps which comes first), or decoded only. Aligned shows raw and decoded side by side, one row per message. The decoded part lists every received (RX) and sent (TX) chunk with a timestamp, as Hex, ASCII (escaped), Decimal, Binary or Hex + ASCII dump.
 - **Themes** (drop-down in the toolbar): System (follows Windows), Light, Dark, Midnight blue, Nord, Dracula, Solarized dark and light, Green screen, Amber retro and High contrast. The terminal colours follow the theme. The choice is remembered and shared with pop-out windows.
 - **Timestamps in the Raw view**: Display… → "Show the arrival time in front of each line". The status bar also shows "no data for N s" when a connection has gone quiet.
+- **Terminal options** per session (Port settings): Backspace sends DEL or BS, Delete/Home/End in VT or PC style, and LF treated as CR+LF or shown as received. XMODEM, YMODEM and similar transfer protocols are not included.
 - **Help**: the toolbar is grouped under small captions, every button has a tooltip, and the **?** button (or F1) opens a short guide. Display colours come with preset swatches, a live preview and a warning when a colour is hard to read on the background; button text switches between white and dark so it stays readable in every theme.
 - Typing in the terminal sends keystrokes (Enter uses the session's line ending); there is also a
   send box with history (Up/Down).

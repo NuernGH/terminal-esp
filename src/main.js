@@ -94,7 +94,7 @@ function persist() {
   syncTray();
   store.set(
     'sessions',
-    [...S.sessions.values()].map(({ id, name, config, lineEnd, autoReconnect, view, cell, enc, localEcho }) => ({ id, name, config, lineEnd, autoReconnect, view, cell, enc, localEcho })),
+    [...S.sessions.values()].map(({ id, name, config, lineEnd, autoReconnect, view, cell, enc, localEcho, bs, lf, keys }) => ({ id, name, config, lineEnd, autoReconnect, view, cell, enc, localEcho, bs, lf, keys })),
   );
 }
 
@@ -180,6 +180,9 @@ function addSession(info) {
     cell: info.cell ?? null,
     enc: info.enc ?? 'utf-8',
     localEcho: !!info.localEcho,
+    bs: info.bs || '7f',
+    lf: info.lf || 'crlf',
+    keys: info.keys || 'vt',
     decode: (info.view ?? (info.decode ? 'split' : 'raw')) !== 'raw',
     rec: [],
     state: info.state || 'off',
@@ -196,7 +199,7 @@ function addSession(info) {
     cursorBlink: true,
     scrollback: 20000,
     allowProposedApi: true,
-    convertEol: true,
+    convertEol: (info.lf || 'crlf') !== 'raw',
     theme: termTheme(),
   });
   s.fit = new FitAddon();
@@ -236,12 +239,21 @@ function addSession(info) {
     return true;
   });
   s.term.onData((d) => {
+    d = terminalKeys(s, d);
     const eol = EOL[s.lineEnd] || '\r';
     if (s.localEcho && s.state === 'on') s.term.write(d.replace(/\r/g, '\r\n').replace(/\x7f/g, '\b \b'));
     sendText(s, d.replace(/\r/g, eol));
   });
   S.sessions.set(s.id, s);
   return s;
+}
+
+/** Keys as this session's device expects them: Backspace as BS or DEL, Delete/Home/End in VT or PC style. */
+const PC_KEYS = { '\x1b[3~': '\x7f', '\x1b[H': '\x1b[1~', '\x1bOH': '\x1b[1~', '\x1b[F': '\x1b[4~', '\x1bOF': '\x1b[4~' };
+function terminalKeys(s, d) {
+  if (s.keys === 'pc' && PC_KEYS[d]) return PC_KEYS[d];
+  if (s.bs === '08' && d === '\x7f') return '\b';
+  return d;
 }
 
 /** Telnet servers can ask for the window size; keep the core informed when it changes. */
@@ -1052,6 +1064,9 @@ async function openDialog(editId) {
     </div>
     <div class="frm"><label>Line ending when you press Enter<select id="d-eol">${opt(['CR', 'LF', 'CRLF'], editing?.lineEnd ?? 'CRLF')}</select></label>
       <label>Text encoding<select id="d-enc">${F.ENCODINGS.map(([v, l]) => `<option value="${v}"${(editing?.enc ?? 'utf-8') === v ? ' selected' : ''}>${l}</option>`).join('')}</select></label>
+      <label>Backspace sends<select id="d-bs"><option value="7f"${(editing?.bs ?? '7f') === '7f' ? ' selected' : ''}>DEL (0x7F), the usual choice</option><option value="08"${editing?.bs === '08' ? ' selected' : ''}>BS (0x08), older devices</option></select></label>
+      <label>Delete, Home, End keys<select id="d-keys"><option value="vt"${(editing?.keys ?? 'vt') === 'vt' ? ' selected' : ''}>VT style (xterm)</option><option value="pc"${editing?.keys === 'pc' ? ' selected' : ''}>PC style</option></select></label>
+      <label class="full">Line ends in received text<select id="d-lf"><option value="crlf"${(editing?.lf ?? 'crlf') === 'crlf' ? ' selected' : ''}>Treat LF as CR+LF (recommended)</option><option value="raw"${editing?.lf === 'raw' ? ' selected' : ''}>Show exactly what arrives</option></select></label>
       <label class="chk full"><input type="checkbox" id="d-echo"${editing?.localEcho ? ' checked' : ''}> Local echo: show what I type (for boards that do not echo it back)</label>
       <label class="chk full"><input type="checkbox" id="d-auto"${editing?.autoReconnect ?? true ? ' checked' : ''}> Reconnect automatically when the connection drops (and keep trying until the board is back)</label></div>
     <p class="hint" id="d-hint"></p><p class="err-text" id="d-err" hidden></p>
@@ -1246,6 +1261,9 @@ async function openDialog(editId) {
     const lineEnd = q('#d-eol').value;
     const enc = q('#d-enc').value;
     const localEcho = q('#d-echo').checked;
+    const bs = q('#d-bs').value;
+    const keys = q('#d-keys').value;
+    const lf = q('#d-lf').value;
     const autoReconnect = q('#d-auto').checked;
     close();
     if (editing) {
@@ -1255,6 +1273,10 @@ async function openDialog(editId) {
       editing.lineEnd = lineEnd;
       editing.enc = enc;
       editing.localEcho = localEcho;
+      editing.bs = bs;
+      editing.keys = keys;
+      editing.lf = lf;
+      editing.term.options.convertEol = lf !== 'raw';
       editing.autoReconnect = autoReconnect;
       editing.secretSet = false;
       await call('session_create', { id: editing.id, name, config, autoReconnect });
@@ -1267,7 +1289,7 @@ async function openDialog(editId) {
     } else {
       const id = 's' + Date.now().toString(36);
       await call('session_create', { id, name, config, autoReconnect });
-      addSession({ id, name, config, lineEnd, autoReconnect, enc, localEcho });
+      addSession({ id, name, config, lineEnd, autoReconnect, enc, localEcho, bs, keys, lf });
       persist();
       renderAll();
       select(id); // added disconnected: the user connects explicitly
