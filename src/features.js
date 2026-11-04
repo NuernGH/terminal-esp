@@ -49,7 +49,8 @@ export const textOf = (enc, bytes) =>
 
 // ------------------------------------------------------------------ plotting
 const COLOURS = ['#4da3ff', '#ff7a7a', '#4cd694', '#ffc857', '#c792ea', '#5fd7d7', '#ff9f68', '#9aa7b8'];
-const MAX_POINTS = 400;
+const MAX_POINTS = 20000; // history kept per series
+const DEFAULT_WIN = 400; // samples shown at once
 const ANSI = /\x1b\[[0-9;?]*[A-Za-z]/g;
 const LABELLED = /([A-Za-z_][\w.\-]{0,23})\s*[=:]\s*(-?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?)/g;
 const BARE = /-?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?/g;
@@ -94,6 +95,7 @@ function plotDigits(s, text) {
   if (vals.length) plotLines(s, vals);
 }
 
+let seriesUid = 0;
 const seriesOpts = (s) => X.store.get('plotseries:' + s.id, {});
 const seriesName = (ser) => ser.label || ser.name;
 function saveSeriesOpts(s) {
@@ -109,6 +111,10 @@ function renderSeriesPanel(s) {
   const focused = p.panel.contains(document.activeElement) ? document.activeElement : null;
   if (focused && focused.tagName === 'INPUT' && focused.type === 'text') return; // do not rebuild while typing
   const rows = [...p.series.values()];
+  // Rebuilding the list while data streams in would swallow clicks on the tick boxes, so only rebuild when the set of series changes.
+  const key = rows.map((x) => x.id).join(',');
+  if (p.panelKey === key) return;
+  p.panelKey = key;
   p.panel.innerHTML = rows.length
     ? rows.map((ser, i) => `<label class="srow"><input type="checkbox" data-i="${i}" ${ser.hidden ? '' : 'checked'} title="Show on the plot"><i style="background:${ser.colour}"></i><input type="text" data-n="${i}" value="${X.esc(seriesName(ser))}" placeholder="${X.esc(ser.name)}" title="Name shown on the plot. Clear it to go back to ${X.esc(ser.name)}." spellcheck="false"></label>`).join('')
     : '<span class="hint">No series yet. They appear when numbers arrive.</span>';
@@ -147,10 +153,11 @@ function plotLines(s, lines) {
       if (!ser) {
         if (p.series.size >= 8) continue;
         const o = seriesOpts(s)[name] || {};
-        ser = { name, colour: COLOURS[p.series.size % COLOURS.length], pts: [], meta: [], hidden: !!o.hidden, label: o.label || '' };
+        ser = { id: ++seriesUid, name, colour: COLOURS[p.series.size % COLOURS.length], pts: [], meta: [], hidden: !!o.hidden, label: o.label || '' };
         p.series.set(name, ser);
       }
       ser.pts.push(value);
+      ser.seq = (ser.seq || 0) + 1;
       ser.meta.push(markPoint(s));
       if (ser.pts.length > MAX_POINTS) {
         ser.pts.shift();
@@ -176,11 +183,11 @@ function nearestPoint(s, ev) {
   const my = ev.clientY - rect.top;
   let best = null;
   for (const ser of geo.series) {
-    const i = Math.round(geo.n <= 1 ? 0 : ((mx - geo.X0) / (geo.X1 - geo.X0)) * (geo.n - 1)) - (geo.n - ser.pts.length);
+    const age = geo.end + ((geo.X1 - mx) / (geo.X1 - geo.X0)) * (geo.win - 1);
+    const i = ser.pts.length - 1 - Math.round(age);
     for (const j of [i - 1, i, i + 1]) {
-      if (j < 0 || j >= ser.pts.length) continue;
-      const x = geo.X0 + (geo.n <= 1 ? 0 : ((j + geo.n - ser.pts.length) / (geo.n - 1)) * (geo.X1 - geo.X0));
-      const d = Math.hypot(x - mx, geo.yOf(ser.pts[j], ser) - my);
+      if (j < geo.first(ser) || j > geo.last(ser)) continue;
+      const d = Math.hypot(geo.xOf(ser, j) - mx, geo.yOf(ser.pts[j], ser) - my);
       if (d < 16 && (!best || d < best.d)) best = { ser, i: j, d };
     }
   }
@@ -246,6 +253,27 @@ function jumpToPoint(s, slot) {
   }
 }
 
+/** Which slice of the history is on screen: `win` samples ending `end` samples before the newest. */
+function plotView(p, series) {
+  const win = Math.max(10, p.win || DEFAULT_WIN);
+  const ref = series.reduce((a, b) => (!a || (b.seq || 0) > (a.seq || 0) ? b : a), null);
+  const refSeq = ref?.seq || 0;
+  const N = series.reduce((m, x) => Math.max(m, x.pts.length), 0);
+  const maxEnd = Math.max(0, N - win);
+  // While scrolled back the view is pinned to a sample, so new data does not drag it along.
+  const end = Math.max(0, Math.min(p.endSeq == null ? 0 : refSeq - p.endSeq, maxEnd));
+  if (p.endSeq != null && end === 0 && refSeq - p.endSeq <= 0) p.endSeq = null;
+  return { win, end, N, maxEnd, refSeq };
+}
+
+function setPlotEnd(s, end) {
+  const p = s.plot;
+  const v = plotView(p, [...p.series.values()].filter((x) => !x.hidden));
+  const e = Math.max(0, Math.min(Math.round(end), v.maxEnd));
+  p.endSeq = e === 0 ? null : v.refSeq - e;
+  drawPlot(s);
+}
+
 export function drawPlot(s) {
   const p = s.plot;
   if (!p || !p.canvas.clientWidth) return;
@@ -269,12 +297,15 @@ export function drawPlot(s) {
   const top = 8;
   const bottom = 16;
   const right = 8;
+  const view = plotView(p, series);
+  const { win, end } = view;
+  const first = (ser) => Math.max(0, ser.pts.length - 1 - end - (win - 1));
+  const last = (ser) => ser.pts.length - 1 - end;
   let lo = Infinity;
   let hi = -Infinity;
-  let n = 0;
   for (const ser of series) {
-    n = Math.max(n, ser.pts.length);
-    for (const v of ser.pts) {
+    for (let j = first(ser); j <= last(ser); j++) {
+      const v = ser.pts[j];
       if (v < lo) lo = v;
       if (v > hi) hi = v;
     }
@@ -300,8 +331,12 @@ export function drawPlot(s) {
   const Y1 = top;
   const yOf = (v, ser) => {
     if (p.each && ser) {
-      const a = Math.min(...ser.pts);
-      const b = Math.max(...ser.pts);
+      let a = Infinity;
+      let b = -Infinity;
+      for (let j = first(ser); j <= last(ser); j++) {
+        if (ser.pts[j] < a) a = ser.pts[j];
+        if (ser.pts[j] > b) b = ser.pts[j];
+      }
       return Y0 - (b === a ? 0.5 : (v - a) / (b - a)) * (Y0 - Y1) * 0.88 - (Y0 - Y1) * 0.06;
     }
     return Y0 - ((v - lo) / (hi - lo)) * (Y0 - Y1);
@@ -320,23 +355,31 @@ export function drawPlot(s) {
     if (!p.each) g.fillText(Math.abs(v) >= 1000 ? v.toFixed(0) : v.toFixed(Math.abs(v) < 10 ? 2 : 1), X0 - 5, y + 4);
   }
   g.textAlign = 'left';
-  g.fillText(`last ${n} samples`, X0, h - 3);
-  p.geo = { X0, X1, n, yOf, series };
+  g.fillText(end > 0 ? `${win} samples, ${end} samples before the newest` : `last ${win} samples`, X0, h - 3);
+  const xOf = (ser, j) => X1 - ((ser.pts.length - 1 - j - end) / (win - 1)) * (X1 - X0);
+  p.geo = { X0, X1, win, end, xOf, yOf, series, first, last };
+  if (p.scroll) {
+    p.scroll.max = String(view.maxEnd);
+    p.scroll.value = String(view.maxEnd - end);
+    p.scroll.disabled = view.maxEnd === 0;
+    p.liveBtn.hidden = end === 0;
+    p.liveBtn.textContent = `Back to live (${end} behind)`;
+  }
   for (const ser of series) {
     g.strokeStyle = ser.colour;
     g.lineWidth = 1.6;
     g.beginPath();
-    ser.pts.forEach((v, i) => {
-      const x = X0 + (n <= 1 ? 0 : ((i + n - ser.pts.length) / (n - 1)) * (X1 - X0));
-      if (i === 0) g.moveTo(x, yOf(v, ser));
-      else g.lineTo(x, yOf(v, ser));
-    });
+    for (let j = first(ser); j <= last(ser); j++) {
+      const x = xOf(ser, j);
+      if (j === first(ser)) g.moveTo(x, yOf(ser.pts[j], ser));
+      else g.lineTo(x, yOf(ser.pts[j], ser));
+    }
     g.stroke();
   }
   if (p.hover) {
     const { ser, i } = p.hover;
-    if (p.series.get(ser.name) === ser && i < ser.pts.length) {
-      const x = X0 + (n <= 1 ? 0 : ((i + n - ser.pts.length) / (n - 1)) * (X1 - X0));
+    if (p.series.get(ser.name) === ser && i >= first(ser) && i <= last(ser)) {
+      const x = xOf(ser, i);
       g.fillStyle = ser.colour;
       g.beginPath();
       g.arc(x, yOf(ser.pts[i], ser), 4.5, 0, Math.PI * 2);
@@ -361,7 +404,7 @@ export function togglePlot(s, on = !s.plot) {
   } else {
     const el = document.createElement('div');
     el.className = 'plot';
-    el.innerHTML = `<div class="plot-bar"><b>Plot</b><span class="legend"></span><button type="button" class="btn ghost sm" data-p="scale" title="Scale every series to its own range, useful when values differ a lot">Scale: shared</button><label class="plot-dig" title="Split the incoming digits into values of this many digits (for example 2: 22222222 becomes 22, 22, 22, 22). 0 = off, read normal text"><span>Digits per value</span><input type="number" min="0" max="9" value="0" data-p="digits"></label><button type="button" class="btn ghost sm" data-p="series" title="Choose which series to show and rename them">Series…</button><button type="button" class="btn ghost sm" data-p="full" title="Show only the plot, hiding the terminal">Plot only</button><button type="button" class="btn ghost sm" data-p="pause">Pause</button><button type="button" class="btn ghost sm" data-p="clear">Clear</button><button type="button" class="btn ghost sm" data-p="close" aria-label="Close plot">✕</button></div><canvas></canvas><div class="plot-tip" hidden></div><div class="plot-series" hidden></div>`;
+    el.innerHTML = `<div class="plot-bar"><b>Plot</b><span class="legend"></span><button type="button" class="btn ghost sm" data-p="scale" title="Scale every series to its own range, useful when values differ a lot">Scale: shared</button><label class="plot-dig" title="Split the incoming digits into values of this many digits (for example 2: 22222222 becomes 22, 22, 22, 22). 0 = off, read normal text"><span>Digits per value</span><input type="number" min="0" max="9" value="0" data-p="digits"></label><button type="button" class="btn ghost sm" data-p="series" title="Choose which series to show and rename them">Series…</button><button type="button" class="btn ghost sm" data-p="full" title="Show only the plot, hiding the terminal">Plot only</button><button type="button" class="btn ghost sm" data-p="pause">Pause</button><button type="button" class="btn ghost sm" data-p="clear">Clear</button><button type="button" class="btn ghost sm" data-p="close" aria-label="Close plot">✕</button></div><canvas></canvas><div class="plot-tip" hidden></div><div class="plot-series" hidden></div><div class="plot-nav"><button type="button" class="btn sm" data-p="live" hidden></button><input type="range" class="plot-scroll" min="0" max="0" value="0" step="1" aria-label="Scroll back in time" title="Drag left to look at older samples. Mouse wheel also scrolls, Ctrl+wheel zooms."></div>`;
     s.pane.querySelector('.split').after(el);
     s.plotEl = el;
     s.plot = { series: new Map(), carry: '', paused: false, raf: 0, canvas: el.querySelector('canvas'), legend: el.querySelector('.legend') };
@@ -386,10 +429,13 @@ export function togglePlot(s, on = !s.plot) {
         s.plot.series.clear();
         s.plot.legend.innerHTML = '';
         drawPlot(s);
+      } else if (b.dataset.p === 'live') {
+        setPlotEnd(s, 0);
       } else if (b.dataset.p === 'series') {
         const panel = s.plotEl.querySelector('.plot-series');
         panel.hidden = !panel.hidden;
         s.plot.panel = panel.hidden ? null : panel;
+        s.plot.panelKey = null;
         if (s.plot.panel) renderSeriesPanel(s);
       } else if (b.dataset.p === 'full') {
         const on = !s.pane.classList.contains('plot-full');
@@ -405,6 +451,19 @@ export function togglePlot(s, on = !s.plot) {
         b.textContent = s.plot.paused ? 'Resume' : 'Pause';
       }
     });
+    s.plot.scroll = el.querySelector('.plot-scroll');
+    s.plot.liveBtn = el.querySelector('[data-p=live]');
+    s.plot.scroll.addEventListener('input', () => setPlotEnd(s, +s.plot.scroll.max - +s.plot.scroll.value));
+    s.plot.canvas.addEventListener('wheel', (ev) => {
+      ev.preventDefault();
+      const v = plotView(s.plot, [...s.plot.series.values()].filter((x) => !x.hidden));
+      if (ev.ctrlKey) {
+        s.plot.win = Math.max(10, Math.min(MAX_POINTS, Math.round(v.win * (ev.deltaY > 0 ? 1.25 : 0.8))));
+        setPlotEnd(s, v.end);
+      } else {
+        setPlotEnd(s, v.end - Math.sign(ev.deltaY) * Math.max(1, Math.round(v.win / 10)));
+      }
+    }, { passive: false });
     wirePlotPointer(s);
     new ResizeObserver(() => drawPlot(s)).observe(s.plot.canvas);
     requestAnimationFrame(() => drawPlot(s));
