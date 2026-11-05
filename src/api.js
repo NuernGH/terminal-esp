@@ -53,6 +53,13 @@ function mockCall(cmd, a) {
     case 'session_create':
       sim.sessions.set(a.id, { id: a.id, name: a.name, config: a.config, auto_reconnect: !!a.autoReconnect, state: 'off', rx: 0, tx: 0 });
       return Promise.resolve();
+    case 'session_set_format': {
+      const s = sim.sessions.get(a.id);
+      s.config = { ...s.config, data_bits: a.dataBits, parity: a.parity, stop_bits: a.stopBits };
+      (window.__formats ??= []).push([a.dataBits, a.parity, a.stopBits]);
+      emit({ type: 'settings', id: a.id, config: s.config, auto_reconnect: s.auto_reconnect });
+      return Promise.resolve();
+    }
     case 'session_reset_board':
       sim.resets = (sim.resets || 0) + 1;
       return Promise.resolve();
@@ -95,7 +102,7 @@ function mockCall(cmd, a) {
           setInterval(() => {
             let text = lines[Math.floor(Math.random() * lines.length)] + '\r\n';
             // Test hook: pretend the board talks at a fixed baud rate; any other rate gives line noise.
-            if (window.__trueBaud && s.config.kind === 'serial' && s.config.baud !== window.__trueBaud) text = '\u00fe\u0003\u0080\u00e0\u0001\u00f8\u0000\u0099\u00fc\u0007\u00c0\u0002\u00ff\u0010';
+            if (window.__trueBaud && s.config.kind === 'serial' && (s.config.baud !== window.__trueBaud || (window.__trueFmt && `${s.config.data_bits}${s.config.parity[0]}${s.config.stop_bits}` !== window.__trueFmt))) text = '\u00fe\u0003\u0080\u00e0\u0001\u00f8\u0000\u0099\u00fc\u0007\u00c0\u0002\u00ff\u0010';
             s.rx += text.length;
             emit({ type: 'data', id: a.id, data: strToB64(text) });
             emit({ type: 'stats', rows: [{ id: a.id, rx: s.rx, tx: s.tx }] });

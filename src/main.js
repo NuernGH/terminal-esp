@@ -847,12 +847,14 @@ function openAutoBaud() {
     <p class="hint">Listens for about a second at each common speed (8 data bits, no parity, 1 stop bit) and picks the one that gives readable text. The board has to be sending something while it listens.</p>
     <label class="chk full"><input type="checkbox" id="ab-reset"> Reset the board at each speed (pulses RTS; needs the DTR/RTS wires)</label>
     <p class="hint" id="ab-hint">With only TX and RX connected the app cannot reset the board. Press <b>RESET</b> on the board a few times while the scan runs, so it prints its boot text.</p>
+    <label class="chk full"><input type="checkbox" id="ab-fmt"> Also try other formats (8E1, 8O1, 8N2, 7E1). Takes several times longer.</label>
     <div class="prog" id="ab-prog" hidden><i id="ab-bar"></i></div><p class="hint" id="ab-msg" role="status"></p>
     <div class="acts"><button type="button" class="btn ghost" id="ab-cancel">Close</button><button type="button" class="btn" id="ab-go">Start</button></div></div>`;
   document.body.append(ov);
   const q = (x) => $(x, ov);
   let stop = false, running = false;
   const orig = s.config.baud;
+  const origFmt = [s.config.data_bits, s.config.parity, s.config.stop_bits];
   const close = () => { stop = true; s.cap = null; ov.remove(); };
   q('#ab-cancel').onclick = close;
   ov.addEventListener('keydown', (e) => e.key === 'Escape' && close());
@@ -868,13 +870,19 @@ function openAutoBaud() {
     q('#ab-go').disabled = true;
     q('#ab-prog').hidden = false;
     const dwell = window.__autoDwell ?? 1200;
-    const rates = [...new Set([...SCAN_BAUDS, orig])].filter((b) => SCAN_BAUDS.includes(b));
+    const rates = SCAN_BAUDS;
+    const fmts = q('#ab-fmt').checked ? [[8, 'none', 1], [8, 'even', 1], [8, 'odd', 1], [8, 'none', 2], [7, 'even', 1]] : [[8, 'none', 1]];
+    const fname = (f) => `${f[0]}${f[1][0].toUpperCase()}${f[2]}`;
+    const setFmt = (f) => call('session_set_format', { id: s.id, dataBits: f[0], parity: f[1], stopBits: f[2] });
     let best = null;
     try {
-      for (let i = 0; i < rates.length && !stop; i++) {
-        const b = rates[i];
-        q('#ab-bar').style.width = (i / rates.length) * 100 + '%';
-        q('#ab-msg').textContent = `Listening at ${b}…`;
+      const total = rates.length * fmts.length;
+      outer: for (let i = 0; i < total && !stop; i++) {
+        const b = rates[i % rates.length];
+        const f = fmts[Math.floor(i / rates.length)];
+        q('#ab-bar').style.width = (i / total) * 100 + '%';
+        q('#ab-msg').textContent = `Listening at ${b} ${fname(f)}…`;
+        if (i % rates.length === 0) await setFmt(f);
         await call('session_set_baud', { id: s.id, baud: b });
         s.cap = [];
         if (q('#ab-reset').checked) await call('session_reset_board', { id: s.id }).catch(() => {});
@@ -882,20 +890,27 @@ function openAutoBaud() {
         const r = readable(s.cap);
         s.cap = null;
         if (r.n >= 8 && r.score >= 0.9 && (!best || r.n * r.score > best.n * best.score)) {
-          best = { b, ...r };
-          if (r.n >= 12 && r.score >= 0.97) break;
+          best = { b, f, ...r };
+          if (r.n >= 12 && r.score >= 0.97) break outer;
         }
         if (s.state !== 'on') throw new Error('The connection closed during the scan.');
       }
-      if (stop) return;
+      if (stop) {
+        await setFmt(origFmt).catch(() => {});
+        await call('session_set_baud', { id: s.id, baud: orig }).catch(() => {});
+        renderAll();
+        return;
+      }
       q('#ab-bar').style.width = '100%';
       if (best) {
+        await setFmt(best.f);
         await call('session_set_baud', { id: s.id, baud: best.b });
-        s.term.write(`\x1b[36m-- baud rate detected: ${best.b} --\x1b[0m\r\n`);
+        s.term.write(`\x1b[36m-- detected: ${best.b} ${fname(best.f)} --\x1b[0m\r\n`);
         renderAll();
-        q('#ab-msg').textContent = `Found ${best.b}. It is now selected.`;
+        q('#ab-msg').textContent = `Found ${best.b} ${fname(best.f)}. It is now selected.`;
         q('#ab-cancel').textContent = 'Done';
       } else {
+        await setFmt(origFmt);
         await call('session_set_baud', { id: s.id, baud: orig });
         renderAll();
         q('#ab-msg').textContent = 'No readable text at any speed, so the rate is back to ' + orig + '. Is the board sending anything? Press RESET on it and scan again.';
@@ -904,6 +919,7 @@ function openAutoBaud() {
       }
     } catch (err) {
       q('#ab-msg').textContent = String(err?.message ?? err);
+      await setFmt(origFmt).catch(() => {});
       await call('session_set_baud', { id: s.id, baud: orig }).catch(() => {});
       q('#ab-go').disabled = false;
     } finally {

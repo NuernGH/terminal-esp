@@ -54,6 +54,11 @@ fn session_set_auto_reconnect(eng: State<Core>, id: String, on: bool) -> Result<
 }
 
 #[tauri::command]
+fn session_set_format(eng: State<Core>, id: String, data_bits: u8, parity: String, stop_bits: u8) -> Result<(), String> {
+    eng.0.set_format(&id, data_bits, &parity, stop_bits)
+}
+
+#[tauri::command]
 fn session_reset_board(eng: State<Core>, id: String) -> Result<(), String> {
     eng.0.reset_board(&id)
 }
@@ -462,6 +467,7 @@ fn main() {
             session_create,
             session_set_baud,
             session_reset_board,
+            session_set_format,
             session_set_auto_reconnect,
             session_rename,
             session_remove,

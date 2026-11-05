@@ -706,6 +706,30 @@ impl Manager {
         Ok(())
     }
 
+    /// Changes data bits, parity and stop bits; applies immediately to an open port.
+    pub fn set_format(&self, id: &str, data_bits: u8, parity: &str, stop_bits: u8) -> Result<(), String> {
+        use serialport::{DataBits, Parity, StopBits};
+        let s = self.get(id)?;
+        if !matches!(s.meta.lock().unwrap().config, Config::Serial { .. }) {
+            return Err("Data format applies to serial sessions only.".into());
+        }
+        if let Some(Conn { serial: Some(port), .. }) = s.conn.lock().unwrap().as_ref() {
+            let mut p = port.lock().unwrap();
+            let e = |e: serialport::Error| format!("Cannot change the data format: {e}");
+            p.set_data_bits(match data_bits { 5 => DataBits::Five, 6 => DataBits::Six, 7 => DataBits::Seven, _ => DataBits::Eight }).map_err(e)?;
+            p.set_parity(match parity { "even" => Parity::Even, "odd" => Parity::Odd, _ => Parity::None }).map_err(e)?;
+            p.set_stop_bits(if stop_bits == 2 { StopBits::Two } else { StopBits::One }).map_err(e)?;
+        }
+        let mut meta = s.meta.lock().unwrap();
+        if let Config::Serial { data_bits: d, parity: pa, stop_bits: sb, .. } = &mut meta.config {
+            *d = data_bits;
+            *pa = parity.to_string();
+            *sb = stop_bits;
+        }
+        (self.inner.emit)(Event::Settings { id: id.to_string(), config: meta.config.clone(), auto_reconnect: meta.auto_reconnect });
+        Ok(())
+    }
+
     /// Pulses RTS (EN) with DTR low on an open serial port: a normal run reset. Needs the RTS wire.
     pub fn reset_board(&self, id: &str) -> Result<(), String> {
         let s = self.get(id)?;
