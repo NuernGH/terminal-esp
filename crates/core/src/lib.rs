@@ -706,6 +706,21 @@ impl Manager {
         Ok(())
     }
 
+    /// Pulses RTS (EN) with DTR low on an open serial port: a normal run reset. Needs the RTS wire.
+    pub fn reset_board(&self, id: &str) -> Result<(), String> {
+        let s = self.get(id)?;
+        if let Some(Conn { serial: Some(port), .. }) = s.conn.lock().unwrap().as_ref() {
+            let mut p = port.lock().unwrap();
+            let _ = p.write_data_terminal_ready(false);
+            p.write_request_to_send(true).map_err(|e| format!("Cannot reset the board: {e}"))?;
+            thread::sleep(Duration::from_millis(100));
+            let _ = p.write_request_to_send(false);
+            Ok(())
+        } else {
+            Err("Connect a serial session first.".into())
+        }
+    }
+
     pub fn set_auto_reconnect(&self, id: &str, on: bool) -> Result<(), String> {
         let s = self.get(id)?;
         let mut meta = s.meta.lock().unwrap();

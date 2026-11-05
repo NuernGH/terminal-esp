@@ -54,6 +54,11 @@ fn session_set_auto_reconnect(eng: State<Core>, id: String, on: bool) -> Result<
 }
 
 #[tauri::command]
+fn session_reset_board(eng: State<Core>, id: String) -> Result<(), String> {
+    eng.0.reset_board(&id)
+}
+
+#[tauri::command]
 fn session_rename(eng: State<Core>, id: String, name: String) -> Result<(), String> {
     eng.0.rename(&id, &name)
 }
@@ -456,6 +461,7 @@ fn main() {
             list_serial_ports,
             session_create,
             session_set_baud,
+            session_reset_board,
             session_set_auto_reconnect,
             session_rename,
             session_remove,

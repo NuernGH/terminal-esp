@@ -53,6 +53,9 @@ function mockCall(cmd, a) {
     case 'session_create':
       sim.sessions.set(a.id, { id: a.id, name: a.name, config: a.config, auto_reconnect: !!a.autoReconnect, state: 'off', rx: 0, tx: 0 });
       return Promise.resolve();
+    case 'session_reset_board':
+      sim.resets = (sim.resets || 0) + 1;
+      return Promise.resolve();
     case 'session_set_baud': {
       const s = sim.sessions.get(a.id);
       if (s.config.kind !== 'serial') return Promise.reject('Baud rate applies to serial sessions only.');
@@ -90,11 +93,13 @@ function mockCall(cmd, a) {
         sim.timers.set(
           a.id,
           setInterval(() => {
-            const text = lines[Math.floor(Math.random() * lines.length)] + '\r\n';
+            let text = lines[Math.floor(Math.random() * lines.length)] + '\r\n';
+            // Test hook: pretend the board talks at a fixed baud rate; any other rate gives line noise.
+            if (window.__trueBaud && s.config.kind === 'serial' && s.config.baud !== window.__trueBaud) text = '\u00fe\u0003\u0080\u00e0\u0001\u00f8\u0000\u0099\u00fc\u0007\u00c0\u0002\u00ff\u0010';
             s.rx += text.length;
             emit({ type: 'data', id: a.id, data: strToB64(text) });
             emit({ type: 'stats', rows: [{ id: a.id, rx: s.rx, tx: s.tx }] });
-          }, 700),
+          }, window.__trueBaud ? 150 : 700),
         );
       }, 400);
       return Promise.resolve();

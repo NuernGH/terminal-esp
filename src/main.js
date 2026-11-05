@@ -586,6 +586,7 @@ function onEvent(ev) {
     addRecord(s, 'rx', bytes);
     if (s.log) F.logWrite(s, 'rx', bytes);
     if (s.plot) F.plotFeed(s, F.textOf(s.enc, bytes));
+    if (s.cap) s.cap.push(bytes);
     s.rxAt = Date.now();
   } else if (ev.type === 'meta') {
     s.name = ev.name;
@@ -633,6 +634,7 @@ function mountShell() {
       <div class="grp"><small>This board</small><div class="row">
         <span class="chip" id="t-addr"></span>
         <select class="baud" id="t-baud" title="Baud rate. Changes apply immediately." aria-label="Baud rate"></select>
+        <button class="btn ghost sm" id="t-detect" title="Find the baud rate by listening at the common ones">Auto</button>
         <button class="btn ghost sm" id="t-auto"></button>
         <button class="btn ghost sm" id="t-conn"></button>
         <button class="btn ghost sm" id="t-settings">Port settings…</button>
@@ -746,6 +748,7 @@ function renderToolbar() {
   $('#grid-cols').value = String(store.get('cols', 'auto'));
   const serial = s?.config.kind === 'serial';
   $('#t-baud').hidden = !serial;
+  $('#t-detect').hidden = !serial;
   if (serial) $('#t-baud').innerHTML = baudOptions(s.config.baud);
   if (s) {
     const a = $('#t-auto');
@@ -825,6 +828,91 @@ function renderStatus() {
 }
 
 /** Offers to download and install the new version in place (installed copies) or opens the release page (portable copy). */
+const SCAN_BAUDS = [115200, 74880, 921600, 9600, 57600, 230400, 460800, 38400, 19200, 1500000];
+/** Share of received bytes that are printable ASCII or CR/LF/TAB; text at the right rate scores near 1, noise near 0.4. */
+const readable = (chunks) => {
+  let n = 0, ok = 0;
+  for (const c of chunks) for (const b of c) { n++; if ((b >= 32 && b < 127) || b === 10 || b === 13 || b === 9) ok++; }
+  return { n, score: n ? ok / n : 0 };
+};
+
+/** Listens at each common baud rate and keeps the one that produces readable text (8N1). */
+function openAutoBaud() {
+  const s = cur();
+  if (!s || s.config.kind !== 'serial' || $('#ab-ov')) return;
+  const ov = document.createElement('div');
+  ov.className = 'ov';
+  ov.id = 'ab-ov';
+  ov.innerHTML = `<div class="dlg" role="dialog" aria-label="Detect baud rate"><h3>Detect baud rate</h3>
+    <p class="hint">Listens for about a second at each common speed (8 data bits, no parity, 1 stop bit) and picks the one that gives readable text. The board has to be sending something while it listens.</p>
+    <label class="chk full"><input type="checkbox" id="ab-reset"> Reset the board at each speed (pulses RTS; needs the DTR/RTS wires)</label>
+    <p class="hint" id="ab-hint">With only TX and RX connected the app cannot reset the board. Press <b>RESET</b> on the board a few times while the scan runs, so it prints its boot text.</p>
+    <div class="prog" id="ab-prog" hidden><i id="ab-bar"></i></div><p class="hint" id="ab-msg" role="status"></p>
+    <div class="acts"><button type="button" class="btn ghost" id="ab-cancel">Close</button><button type="button" class="btn" id="ab-go">Start</button></div></div>`;
+  document.body.append(ov);
+  const q = (x) => $(x, ov);
+  let stop = false, running = false;
+  const orig = s.config.baud;
+  const close = () => { stop = true; s.cap = null; ov.remove(); };
+  q('#ab-cancel').onclick = close;
+  ov.addEventListener('keydown', (e) => e.key === 'Escape' && close());
+  q('#ab-reset').onchange = () => (q('#ab-hint').hidden = q('#ab-reset').checked);
+  if (s.state !== 'on') {
+    q('#ab-msg').textContent = 'Connect the session first (click its status dot), then start the scan.';
+    q('#ab-go').disabled = true;
+  }
+  q('#ab-go').onclick = async () => {
+    if (running) return;
+    running = true;
+    stop = false;
+    q('#ab-go').disabled = true;
+    q('#ab-prog').hidden = false;
+    const dwell = window.__autoDwell ?? 1200;
+    const rates = [...new Set([...SCAN_BAUDS, orig])].filter((b) => SCAN_BAUDS.includes(b));
+    let best = null;
+    try {
+      for (let i = 0; i < rates.length && !stop; i++) {
+        const b = rates[i];
+        q('#ab-bar').style.width = (i / rates.length) * 100 + '%';
+        q('#ab-msg').textContent = `Listening at ${b}…`;
+        await call('session_set_baud', { id: s.id, baud: b });
+        s.cap = [];
+        if (q('#ab-reset').checked) await call('session_reset_board', { id: s.id }).catch(() => {});
+        await new Promise((r) => setTimeout(r, dwell));
+        const r = readable(s.cap);
+        s.cap = null;
+        if (r.n >= 8 && r.score >= 0.9 && (!best || r.n * r.score > best.n * best.score)) {
+          best = { b, ...r };
+          if (r.n >= 12 && r.score >= 0.97) break;
+        }
+        if (s.state !== 'on') throw new Error('The connection closed during the scan.');
+      }
+      if (stop) return;
+      q('#ab-bar').style.width = '100%';
+      if (best) {
+        await call('session_set_baud', { id: s.id, baud: best.b });
+        s.term.write(`\x1b[36m-- baud rate detected: ${best.b} --\x1b[0m\r\n`);
+        renderAll();
+        q('#ab-msg').textContent = `Found ${best.b}. It is now selected.`;
+        q('#ab-cancel').textContent = 'Done';
+      } else {
+        await call('session_set_baud', { id: s.id, baud: orig });
+        renderAll();
+        q('#ab-msg').textContent = 'No readable text at any speed, so the rate is back to ' + orig + '. Is the board sending anything? Press RESET on it and scan again.';
+        q('#ab-go').disabled = false;
+        q('#ab-go').textContent = 'Scan again';
+      }
+    } catch (err) {
+      q('#ab-msg').textContent = String(err?.message ?? err);
+      await call('session_set_baud', { id: s.id, baud: orig }).catch(() => {});
+      q('#ab-go').disabled = false;
+    } finally {
+      s.cap = null;
+      running = false;
+    }
+  };
+}
+
 async function openUpdateDialog() {
   if (!UPDATE || $('#upd-ov')) return;
   const canSelf = !!UPDATE.setup && (await call('can_self_update').catch(() => false));
@@ -1901,6 +1989,7 @@ function wire() {
     }
     renderAll();
   });
+  $('#t-detect').onclick = () => openAutoBaud();
   $('#t-auto').onclick = async () => {
     const s = cur();
     if (!s) return;
